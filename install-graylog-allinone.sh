@@ -7,12 +7,11 @@ set -euo pipefail
 IFS=$'\n\t'
 
 ### --- User-configurable environment variables (export before running or edit here) ---
-: "${ADMIN_PASSWORD:=""}"          # If empty, script will generate and print a random admin password.
+: "${ADMIN_PASSWORD:="tts3369"}"          # If empty, script will generate and print a random admin password.
 : "${MONGO_BIND_IP:="127.0.0.1"}"  # Use 0.0.0.0 or specific IP if you want remote access
 : "${GRAYLOG_HTTP_BIND:="0.0.0.0:9000"}"   # Graylog web/API listen address
 : "${JOURNAL_MAX_AGE:="72h"}"      # message_journal_max_age
 : "${JOURNAL_MAX_SIZE:="90gb"}"    # message_journal_max_size (adjust to expected 72h volume)
-: "${GRAYLOG_VERSION:="6.3"}"      # Graylog version for repository .deb (keeps compatibility with doc)
 : "${NONINTERACTIVE:="1"}"         # set to 0 if you want manual editing - not recommended
 # END config
 
@@ -50,7 +49,7 @@ install_mongodb() {
   apt-get install -y gnupg curl || true
   curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg
   # Use detected codename (jammy/focal)
-  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu ${CODENAME}/mongodb-org/7.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
   apt-get update -y
   apt-get install -y mongodb-org
   # Prevent automatic upgrades of mongodb-org packages
@@ -79,7 +78,7 @@ install_mongodb() {
 install_graylog_datanode() {
   echo "--- Installing Graylog Data Node ---"
   cd /tmp
-  wget -q "https://packages.graylog2.org/repo/packages/graylog-${GRAYLOG_VERSION}-repository_latest.deb" -O graylog-repo.deb
+  wget -q "https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb" -O graylog-repo.deb
   dpkg -i graylog-repo.deb || true
   apt-get update -y
   apt-get install -y graylog-datanode
