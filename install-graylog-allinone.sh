@@ -30,7 +30,7 @@ apt_update() {
 
 install_packages() {
   echo "--- Installing prerequisite packages ---"
-  apt-get install -y gnupg curl wget apt-transport-https ca-certificates lsb-release software-properties-common
+  apt-get install -y gnupg curl wget apt-transport-https ca-certificates lsb-release software-properties-common net-tools
 }
 
 set_timezone() {
@@ -223,6 +223,32 @@ print_summary() {
   echo "  /etc/graylog/datanode/datanode.conf"
   echo "  /etc/graylog/server/server.conf"
   echo "=================================================="
+}
+
+reset_graylog() {
+  echo "WARNING: This will REMOVE MongoDB, Graylog Data Node, Graylog Server,"
+  echo "their configs, and data directories. This is DESTRUCTIVE."
+  read -p "Do you really want to reset everything? (yes/NO): " confirm
+  if [[ "$confirm" != "yes" ]]; then
+    echo "Reset cancelled."
+    return
+  fi
+
+  echo "--- Stopping services ---"
+  systemctl stop graylog-server graylog-datanode mongod || true
+
+  echo "--- Removing packages ---"
+  apt-get purge -y graylog-server graylog-datanode mongodb-org* || true
+  apt-get autoremove -y
+  apt-get clean
+
+  echo "--- Removing config and data dirs ---"
+  rm -rf /etc/graylog /var/lib/graylog /var/log/graylog
+  rm -rf /etc/mongod.conf /var/lib/mongodb /var/log/mongodb
+  rm -rf /etc/apt/sources.list.d/graylog* /etc/apt/sources.list.d/mongodb-org-*.list
+  rm -rf /usr/share/keyrings/mongodb-server-*.gpg
+
+  echo "--- Reset complete ---"
 }
 
 ## ---- Run steps ----
