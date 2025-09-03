@@ -17,8 +17,7 @@ sudo apt-get install -y mongodb-org
 sudo apt-mark hold mongodb-org
 
 # Configure MongoDB to bind to all interfaces:contentReference[oaicite:36]{index=36}
-sudo sed -i 's/^\( *bindIp:.*\)/#\1/' /etc/mongod.conf
-sudo sed -i '/^net:/,/^$/ { /^  port:/a\  bindIpAll: true }' /etc/mongod.conf
+sudo sed -i 's/^\(\s*\)bindIp:.*/\1bindIpAll: true/' /etc/mongod.conf
 
 # Start MongoDB
 sudo systemctl daemon-reload
