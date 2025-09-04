@@ -14,21 +14,22 @@
 # Five most load-bearing facts:
 # 1. Graylog DataNode requires OpenJDK 17 or later.
 # 2. DataNode embeds OpenSearch and requires vm.max_map_count=262144.
-# 3. MongoDB must be running and accessible at mongodb://localhost:27017/graylog.
+# 3. MongoDB must be running and accessible at mongodb://localhost:27017/graylog with bindIpAll: true.
 # 4. DataNode must expose OpenSearch API (0.0.0.0:9200) and REST API (0.0.0.0:8999).
-# 5. Heap size should be 25-50% of system RAM, capped at 16GB.
+# 5. Heap size set to 25% of system RAM, capped at 16GB (conservative for single-node setups; docs allow up to 31GB).
 
 set -euo pipefail
+set -x  # Enable debugging
 IFS=$'\n\t'
 
 LOG="/var/log/graylog-datanode-install.log"
-touch "$LOG"
+touch "$LOG" || { echo "Failed to create log file $LOG"; exit 1; }
 exec > >(tee -a "$LOG") 2>&1
 
 DATANODE_CONF="/etc/graylog/datanode/datanode.conf"
 GRAYLOG_DATANODE_DATA_DIR="/var/lib/graylog-datanode"
 GD_REPO_DEB_URL="https://packages.graylog2.org/repo/packages/graylog-repository_latest.deb"
-GITHUB_URL="https://raw.githubusercontent.com/example/repo/main/install-graylog-datanode.sh"  # Replace with actual URL
+MONGO_CONF="/etc/mongod.conf"
 
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
@@ -46,8 +47,43 @@ apt_install_if_missing() {
     fi
   done
   if [ "${#miss[@]}" -gt 0 ]; then
-    apt-get update -y
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${miss[@]}"
+    echo "Installing missing packages: ${miss[@]}"
+    if ! apt-get update -y; then
+      generate_troubleshooting_log
+      echo "Failed to run 'apt-get update'. Check network or /etc/apt/sources.list."
+      echo "Remediation: Run 'sudo apt-get update --fix-missing' or check logs at $log_file"
+      exit 1
+    fi
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "${miss[@]}"; then
+      generate_troubleshooting_log
+      echo "Failed to install packages: ${miss[@]}"
+      echo "Remediation: Run 'sudo apt-get install -y ${miss[@]}' manually or check logs at $log_file"
+      exit 1
+    fi
+  else
+    echo "All required packages already installed: ${pkgs[@]}"
+  fi
+}
+
+set_mongo_bindipall() {
+  echo "Ensuring MongoDB bindIpAll: true"
+  [ -f "$MONGO_CONF" ] || { echo "$MONGO_CONF missing"; return 0; }
+  cp -av "$MONGO_CONF" "${MONGO_CONF}.bak.$(date +%s)" || true
+  if grep -qE '^\s*bindIpAll\s*:\s*true' "$MONGO_CONF"; then
+    echo "bindIpAll already true"
+    return
+  fi
+  sed -i -E '/^\s*net:/,/^\s*(bindIp|bindIpAll|port|ipv6)/s/^\s*bindIp\s*:\s*.*/  bindIpAll: true/' "$MONGO_CONF" || true
+  if ! grep -q 'bindIpAll' "$MONGO_CONF"; then
+    sed -i '/^\s*net:/a\  bindIpAll: true' "$MONGO_CONF" || echo -e "\nnet:\n  bindIpAll: true" >> "$MONGO_CONF"
+  fi
+  echo "Set bindIpAll: true in $MONGO_CONF"
+  if ! systemctl restart mongod; then
+    generate_troubleshooting_log
+    echo "Failed to restart mongod."
+    echo "Remediation: Check logs with 'journalctl -u mongod -n 200 --no-pager'"
+    echo "Troubleshooting log: $log_file"
+    exit 1
   fi
 }
 
@@ -69,16 +105,18 @@ extract_conf_value() {
   awk -F'=' -v k="$key" '$0 ~ "^[ \t]*"k"[ \t]*=" { gsub(/[ \t]+/,"",$2); print $2; exit }' "$file" 2>/dev/null || true
 }
 
-ensure_password_secret() {
+generate_password_secret() {
   local secret
-  secret=$(extract_conf_value "$DATANODE_CONF" "password_secret")
+  local conf_file="/etc/graylog/datanode/datanode.conf"
+  
+  secret=$(extract_conf_value "$conf_file" "password_secret")
   if [ -n "$secret" ]; then
-    echo "password_secret already present in datanode.conf"
+    echo "password_secret already present in $conf_file"
     return
   fi
+  
   secret=$(openssl rand -hex 48)
-  ensure_conf_value "$DATANODE_CONF" "password_secret" "$secret"
-  echo "Generated and set new password_secret"
+  ensure_conf_value "$conf_file" "password_secret" "$secret"
 }
 
 ensure_datanode_binds() {
@@ -118,7 +156,13 @@ set_vm_max_map_count() {
 
 start_and_wait() {
   local svc="$1"
-  systemctl enable "$svc" --now || { echo "Failed to enable/start $svc"; return 1; }
+  systemctl enable "$svc" --now || {
+    generate_troubleshooting_log
+    echo "Failed to enable/start $svc"
+    echo "Remediation: Check logs with 'journalctl -u $svc -n 200 --no-pager'"
+    echo "Troubleshooting log: $log_file"
+    return 1
+  }
   for i in {1..8}; do
     if systemctl is-active --quiet "$svc"; then
       echo "$svc active"
@@ -252,22 +296,47 @@ cleanup() {
 main() {
   require_root
   echo "Starting Graylog DataNode installer"
+  generate_troubleshooting_log  # Capture initial state for debugging
 
   # Install essential packages
   apt_install_if_missing gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless
 
-  # Verify MongoDB is running
+  # Verify and configure MongoDB
+  set_mongo_bindipall
   if ! systemctl is-active --quiet mongod; then
+    generate_troubleshooting_log
     echo "MongoDB is not running. Please ensure MongoDB is installed and running."
     echo "Remediation: Install MongoDB with 'sudo apt-get install mongodb-org' and start with 'sudo systemctl start mongod'"
+    echo "Troubleshooting log: $log_file"
     exit 1
   fi
+  echo "MongoDB is running"
 
   # Install Graylog repo
   if ! dpkg -l | grep -q graylog; then
-    wget -q "$GD_REPO_DEB_URL" -O /tmp/graylog-repo.deb
-    dpkg -i /tmp/graylog-repo.deb || true
-    apt-get update -y
+    echo "Installing Graylog repository"
+    if ! wget -q "$GD_REPO_DEB_URL" -O /tmp/graylog-repo.deb; then
+      generate_troubleshooting_log
+      echo "Failed to download Graylog repository package"
+      echo "Remediation: Check network connectivity with 'ping 8.8.8.8' or 'curl https://packages.graylog2.org'"
+      echo "Troubleshooting log: $log_file"
+      exit 1
+    fi
+    if ! dpkg -i /tmp/graylog-repo.deb; then
+      generate_troubleshooting_log
+      echo "Failed to install Graylog repository package"
+      echo "Remediation: Run 'sudo dpkg -i /tmp/graylog-repo.deb' manually or check logs at $log_file"
+      exit 1
+    fi
+    if ! apt-get update -y; then
+      generate_troubleshooting_log
+      echo "Failed to update apt after adding Graylog repository"
+      echo "Remediation: Run 'sudo apt-get update --fix-missing' or check /etc/apt/sources.list"
+      echo "Troubleshooting log: $log_file"
+      exit 1
+    fi
+  else
+    echo "Graylog repository already installed"
   fi
 
   # Install DataNode
@@ -277,7 +346,7 @@ main() {
   set_vm_max_map_count
 
   # Configure DataNode
-  ensure_password_secret
+  generate_password_secret
   ensure_datanode_binds
   ensure_data_dir
   detect_and_set_heap
@@ -285,9 +354,11 @@ main() {
   # Start and verify
   systemctl daemon-reload
   start_and_wait graylog-datanode || {
+    generate_troubleshooting_log
     echo "graylog-datanode failed to start."
     echo "Remediation: Check logs with 'journalctl -u graylog-datanode -n 200 --no-pager'"
     echo "Config file: $DATANODE_CONF"
+    echo "Troubleshooting log: $log_file"
     exit 1
   }
 
@@ -298,14 +369,5 @@ main() {
   echo "Graylog DataNode installation complete. OpenSearch API at http://<server-ip>:9200"
   echo "DataNode REST API at http://<server-ip>:8999"
 }
-
-# Parse optional update flag
-UPDATE=false
-while getopts "u" opt; do
-  case $opt in
-    u) UPDATE=true ;;
-    *) echo "Usage: $0 [-u]"; exit 1 ;;
-  esac
-done
 
 main "$@"
