@@ -115,21 +115,21 @@ set_mongo_bindipall() {
   local conf="/etc/mongod.conf"
   if ! [[ -f "$conf" ]]; then return; fi
   backup_file "$conf"
-  if grep -q "bindIpAll: true" "$conf" && ! grep -q "^[[:space:]]*bindIp:" "$conf"; then
+  # Check if correctly configured
+  if grep -q "^[[:space:]]*bindIpAll: true" "$conf" && ! grep -q "^[[:space:]]*bindIp:" "$conf" && ! grep -A1 "^net:" "$conf" | grep -q "^net:"; then
     echo "MongoDB bindIpAll already set correctly."
     return
   fi
-  # Remove any bindIp entries to avoid conflicts
-  sed -i '/^[[:space:]]*bindIp:/d' "$conf"
-  if grep -q "^net:" "$conf"; then
-    # Ensure bindIpAll is present under net:
-    if ! grep -q "bindIpAll: true" "$conf"; then
-      sed -i '/^net:/a\  bindIpAll: true' "$conf"
-    fi
-  else
-    echo -e "\nnet:\n  bindIpAll: true" >> "$conf"
+  # Remove duplicate net: sections and bindIp entries
+  sed -i '/^[[:space:]]*net:/,/^[[:space:]]*[a-zA-Z]/ { /^[[:space:]]*net:/d; /^[[:space:]]*bindIp:/d; /^[[:space:]]*bindIpAll:/d; }' "$conf"
+  # Ensure single net: section with bindIpAll: true
+  echo -e "\nnet:\n  bindIpAll: true" >> "$conf"
+  # Validate config
+  if ! mongod --config "$conf" --dryRun >/dev/null 2>&1; then
+    echo "Invalid MongoDB config after modification."
+    handle_failure "MongoDB Config Validation" "/etc/mongod.conf" "cat /etc/mongod.conf" "sudo systemctl restart mongod" "Restore backup: cp /etc/mongod.conf.bak.* /etc/mongod.conf"
   fi
-  echo "Set MongoDB bindIpAll: true, removed bindIp (cite: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/)."
+  echo "Set MongoDB bindIpAll: true, removed bindIp and duplicates (cite: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/)."
 }
 
 detect_heap_size() {
@@ -219,9 +219,12 @@ verify_service() {
     return 1
   fi
   systemctl status "$service" --no-pager -l
-  if [[ -n "$log_file" && -f "$log_file" ]] && journalctl -u "$service" -n 50 | grep -iq "error\|fatal"; then
-    echo "FAIL: Errors in logs."
-    journalctl -u "$service" -n 200 --no-pager
+  # Get service start time to filter logs
+  local start_time
+  start_time=$(systemctl show "$service" --property=ActiveEnterTimestamp | cut -d= -f2)
+  if [[ -n "$log_file" && -f "$log_file" && -n "$start_time" ]] && journalctl -u "$service" --since "$start_time" -n 50 | grep -iq "error\|fatal"; then
+    echo "FAIL: Errors in logs since $start_time."
+    journalctl -u "$service" --since "$start_time" -n 200 --no-pager
     return 1
   fi
   if [[ -n "$port" ]] && ! ss -tuln | grep -q ":$port "; then
@@ -290,7 +293,7 @@ main() {
 
   # MongoDB (cite: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/)
   if ! dpkg -s mongodb-org &>/dev/null; then
-    curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+    curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server Cristián Ramírez Rodríguez (CRo) -8.0.gpg
     echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" > /etc/apt/sources.list.d/mongodb-org-8.0.list
     apt-get update -y
     apt-get install -y mongodb-org
@@ -298,7 +301,7 @@ main() {
   fi
   set_mongo_bindipall
   if ! start_and_wait "mongod"; then
-    handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" "sed -i '/^[[:space:]]*bindIp:/d' /etc/mongod.conf; sed -i '/^net:/a\  bindIpAll: true' /etc/mongod.conf"
+    handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" "sed -i '/^[[:space:]]*bindIp:/d' /etc/mongod.conf; sed -i '/^[[:space:]]*net:/,/^[[:space:]]*[a-zA-Z]/d; $ a\nnet:\n  bindIpAll: true' /etc/mongod.conf"
   fi
   verify_service "mongod" "/var/log/mongodb/mongod.log" "27017" "" || handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" ""
 
