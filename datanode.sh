@@ -1,22 +1,4 @@
 #!/usr/bin/env bash
-# install-graylog-datanode.sh
-# Fault-tolerant, idempotent installer for Graylog DataNode (with embedded OpenSearch) on Ubuntu Server 24.04
-# Requires MongoDB to be pre-installed and running
-# Run with sudo
-
-# Documentation and Citations:
-# - Graylog DataNode: https://docs.graylog.org/docs/datanode
-# - OpenSearch Prerequisites (vm.max_map_count): https://opensearch.org/docs/latest/install-and-configure/install-opensearch/index/#important-settings
-# - MongoDB Configuration: https://www.mongodb.com/docs/manual/reference/configuration-options/#net-options
-# - Graylog Prerequisites: https://docs.graylog.org/docs/prerequisites
-# - JVM Settings: https://docs.graylog.org/docs/prerequisites#jvm-settings
-
-# Five most load-bearing facts:
-# 1. Graylog DataNode requires OpenJDK 17 or later.
-# 2. DataNode embeds OpenSearch and requires vm.max_map_count=262144.
-# 3. MongoDB must be running and accessible at mongodb://localhost:27017/graylog with bindIpAll: true.
-# 4. DataNode must expose OpenSearch API (0.0.0.0:9200) and REST API (0.0.0.0:8999).
-# 5. Heap size set to 25% of system RAM, capped at 16GB (conservative for single-node setups; docs allow up to 31GB).
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -32,6 +14,18 @@ main() {
   sudo dpkg -i graylog-6.3-repository_latest.deb
   sudo apt-get update
   sudo apt-get install graylog-datanode
+
+  #Configure Datanode
+  echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.d/99-graylog-datanode.conf
+  sudo sysctl --system
+  cat /proc/sys/vm/max_map_count
+
+  sudo sed -i "/password_secret/c\\password_secret = $(openssl rand -hex 32)" /etc/graylog/datanode/datanode.conf
+  sudo sed -i "/mongodb_uri/c\\mongodb_uri = 127.0.0.1:27017" /etc/graylog/datanode/datanode.conf
+  echo "opensearch_heap = 4g" >> /etc/graylog/datanode/datanode.conf
+  sudo systemctl daemon-reload
+  sudo systemctl enable graylog-datanode.service
+  sudo systemctl start graylog-datanode
 }
 
 main "$@"
