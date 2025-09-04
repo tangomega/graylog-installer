@@ -57,7 +57,6 @@ main() {
   sudo systemctl daemon-reload
   sudo systemctl enable graylog-server.service
   sudo systemctl start graylog-server.service
-  sudo systemctl status graylog-server.service
   tail /var/log/graylog-server/server.log
 }
 
