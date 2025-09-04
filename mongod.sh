@@ -10,6 +10,8 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+sudo apt-get purge mongodb-org*
+
 # Auto-update configuration (replace with your values)
 SCRIPT_URL="https://raw.githubusercontent.com/<user>/<repo>/main/mongod.sh"  # Replace with your GitHub raw URL
 EXPECTED_CHECKSUM="replace_with_actual_sha256_checksum"  # Replace with: sha256sum mongod.sh
