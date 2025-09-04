@@ -5,7 +5,7 @@
 # https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/ for MongoDB,
 # https://opensearch.org/docs/latest/ for OpenSearch settings.
 # Usage: sudo ./installer.sh
-# On failure: Prompts to run cleanup function to reset the environment.
+# On failure: Prompts to run cleanup function to reset the environment, including MongoDB.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -34,9 +34,7 @@ apt_install_if_missing() {
 }
 
 backup_file() {
-  local file="${1:-
-
-}"  # Handle empty input safely
+  local file="${1:-}"  # Handle empty input safely
   if [[ -n "$file" && -f "$file" ]]; then
     cp -p "$file" "${file}.bak.$(date +%s)"
     echo "Backed up $file"
@@ -117,16 +115,21 @@ set_mongo_bindipall() {
   local conf="/etc/mongod.conf"
   if ! [[ -f "$conf" ]]; then return; fi
   backup_file "$conf"
-  if grep -q "bindIpAll: true" "$conf"; then
-    echo "MongoDB bindIpAll already set."
+  if grep -q "bindIpAll: true" "$conf" && ! grep -q "^[[:space:]]*bindIp:" "$conf"; then
+    echo "MongoDB bindIpAll already set correctly."
     return
   fi
+  # Remove any bindIp entries to avoid conflicts
+  sed -i '/^[[:space:]]*bindIp:/d' "$conf"
   if grep -q "^net:" "$conf"; then
-    sed -i '/^net:/a\  bindIpAll: true' "$conf"
+    # Ensure bindIpAll is present under net:
+    if ! grep -q "bindIpAll: true" "$conf"; then
+      sed -i '/^net:/a\  bindIpAll: true' "$conf"
+    fi
   else
     echo -e "\nnet:\n  bindIpAll: true" >> "$conf"
   fi
-  echo "Set MongoDB bindIpAll: true (cite: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/)."
+  echo "Set MongoDB bindIpAll: true, removed bindIp (cite: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/)."
 }
 
 detect_heap_size() {
@@ -272,7 +275,7 @@ cleanup() {
   if [[ "$confirm" != "y" ]]; then return; fi
   systemctl stop graylog-server graylog-datanode mongod || true
   apt-get purge -y graylog-server graylog-datanode mongodb-org openjdk-17-jre-headless
-  rm -rf /etc/graylog /var/lib/graylog* /var/lib/mongodb /etc/mongod.conf* /etc/apt/sources.list.d/mongodb* /etc/apt/sources.list.d/graylog* /etc/default/graylog-server /etc/sysctl.d/99-graylog.conf
+  rm -rf /etc/graylog /var/lib/graylog* /var/lib/mongodb /var/log/mongodb /etc/mongod.conf* /etc/apt/sources.list.d/mongodb* /etc/apt/sources.list.d/graylog* /etc/default/graylog-server /etc/sysctl.d/99-graylog.conf
   systemctl daemon-reload
   echo "Cleanup complete."
 }
@@ -295,7 +298,7 @@ main() {
   fi
   set_mongo_bindipall
   if ! start_and_wait "mongod"; then
-    handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" "sed -i '/^net:/a\  bindIpAll: true' /etc/mongod.conf"
+    handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" "sed -i '/^[[:space:]]*bindIp:/d' /etc/mongod.conf; sed -i '/^net:/a\  bindIpAll: true' /etc/mongod.conf"
   fi
   verify_service "mongod" "/var/log/mongodb/mongod.log" "27017" "" || handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" ""
 
