@@ -144,6 +144,97 @@ basic_checks() {
   curl -sS --max-time 3 http://127.0.0.1:9200/_cluster/health || echo "No response from 9200"
 }
 
+generate_troubleshooting_log() {
+  local log_file="/var/log/graylog-datanode-troubleshoot-$(date +%Y%m%d%H%M%S).log"
+  echo "Generating troubleshooting log: $log_file"
+
+  {
+    echo "=== Graylog DataNode Troubleshooting Log ==="
+    echo "Generated: $(date)"
+    echo
+
+    echo "=== System Information ==="
+    echo "OS Version:"
+    lsb_release -a 2>/dev/null || echo "lsb_release not available"
+    echo
+    echo "Kernel Version:"
+    uname -a
+    echo
+    echo "Total RAM (MB):"
+    free -m | awk '/^Mem:/ {print $2}'
+    echo
+    echo "CPU Info:"
+    lscpu | grep -E 'Model name|Socket|Core|Thread|CPU\(s\)'
+    echo
+
+    echo "=== Package Versions ==="
+    echo "OpenJDK Version:"
+    java -version 2>&1 || echo "Java not installed"
+    echo
+    echo "MongoDB Version:"
+    mongod --version 2>/dev/null || echo "MongoDB not installed"
+    echo
+    echo "Graylog DataNode Version:"
+    dpkg -l | grep graylog-datanode 2>/dev/null || echo "Graylog DataNode not installed"
+    echo
+
+    echo "=== Service Status ==="
+    echo "MongoDB Service:"
+    systemctl status mongod --no-pager 2>/dev/null || echo "MongoDB service not found"
+    echo
+    echo "Graylog DataNode Service:"
+    systemctl status graylog-datanode --no-pager 2>/dev/null || echo "Graylog DataNode service not found"
+    echo
+
+    echo "=== Configuration Files ==="
+    echo "MongoDB Config (/etc/mongod.conf):"
+    if [ -f "/etc/mongod.conf" ]; then
+      cat /etc/mongod.conf || echo "Failed to read /etc/mongod.conf"
+    else
+      echo "/etc/mongod.conf not found"
+    fi
+    echo
+    echo "Graylog DataNode Config (/etc/graylog/datanode/datanode.conf):"
+    if [ -f "/etc/graylog/datanode/datanode.conf" ]; then
+      sed 's/password_secret\s*=.*/password_secret = [REDACTED]/' /etc/graylog/datanode/datanode.conf || echo "Failed to read /etc/graylog/datanode/datanode.conf"
+    else
+      echo "/etc/graylog/datanode/datanode.conf not found"
+    fi
+    echo
+    echo "Sysctl Config (/etc/sysctl.d/99-graylog-datanode.conf):"
+    if [ -f "/etc/sysctl.d/99-graylog-datanode.conf" ]; then
+      cat /etc/sysctl.d/99-graylog-datanode.conf || echo "Failed to read /etc/sysctl.d/99-graylog-datanode.conf"
+    else
+      echo "/etc/sysctl.d/99-graylog-datanode.conf not found"
+    fi
+    echo
+
+    echo "=== System Logs ==="
+    echo "MongoDB Logs (last 50 lines):"
+    journalctl -u mongod -n 50 --no-pager 2>/dev/null || echo "No MongoDB logs available"
+    echo
+    echo "Graylog DataNode Logs (last 50 lines):"
+    journalctl -u graylog-datanode -n 50 --no-pager 2>/dev/null || echo "No Graylog DataNode logs available"
+    echo
+
+    echo "=== Network Status ==="
+    echo "Listening Ports (9200, 8999, 9300):"
+    ss -tulpen | grep -E ':(9200|8999|9300)' 2>/dev/null || echo "No relevant ports listening"
+    echo
+    echo "OpenSearch Health Check:"
+    curl -sS --max-time 3 http://127.0.0.1:9200/_cluster/health 2>/dev/null || echo "No response from OpenSearch (port 9200)"
+    echo
+    echo "DataNode REST API Check:"
+    curl -sS --max-time 3 http://127.0.0.1:8999 2>/dev/null || echo "No response from DataNode REST API (port 8999)"
+    echo
+
+    echo "=== End of Troubleshooting Log ==="
+  } > "$log_file" 2>&1
+
+  echo "Troubleshooting log generated at $log_file"
+  echo "Please share this file for support."
+}
+
 cleanup() {
   echo "WARNING: This will remove Graylog DataNode and all its data. Continue? [y/N]"
   read -r confirm
