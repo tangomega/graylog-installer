@@ -45,7 +45,6 @@ main() {
   sudo systemctl daemon-reload
   sudo systemctl enable graylog-datanode.service
   sudo systemctl start graylog-datanode
-  sudo systemctl status graylog-datanode
 
   #Graylog Server
   echo "Starting Graylog Server installer"
