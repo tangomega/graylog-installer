@@ -5,7 +5,7 @@ IFS=$'\n\t'
 main() {
   echo "Starting MongoDB installer"
   sudo service mongod stop
-  sudo apt-get purge -y mongodb-org*
+  sudo apt-get purge mongodb-org*
   sudo rm -r /var/log/mongodb /var/lib/mongodb
   
   # Install essential packages
