@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # installer.sh: MongoDB Installer for Ubuntu Server 24.04
-# Idempotent, fault-tolerant script to install and configure MongoDB 8.0 with bindIpAll: true.
+# Idempotent, fault-tolerant script to install and configure MongoDB 8.0, replacing bindIp with bindIpAll: true.
 # Citation: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/ for MongoDB setup.
 # Usage: sudo ./installer.sh
 # On failure: Prompts to run cleanup function to reset MongoDB environment.
@@ -44,21 +44,26 @@ set_mongo_bindipall() {
   local conf="/etc/mongod.conf"
   if ! [[ -f "$conf" ]]; then return; fi
   backup_file "$conf"
-  # Check if correctly configured
-  if grep -q "^[[:space:]]*bindIpAll: true" "$conf" && ! grep -q "^[[:space:]]*bindIp:" "$conf" && ! grep -A1 "^net:" "$conf" | grep -q "^net:"; then
+  # Check if correctly configured (bindIpAll: true present, no bindIp)
+  if grep -q "^[[:space:]]*bindIpAll: true" "$conf" && ! grep -q "^[[:space:]]*bindIp:" "$conf"; then
     echo "MongoDB bindIpAll already set correctly."
     return
   fi
-  # Remove duplicate net: sections, bindIp, and bindIpAll entries
-  sed -i '/^[[:space:]]*net:/,/^[[:space:]]*[a-zA-Z#]/ { /^[[:space:]]*net:/d; /^[[:space:]]*bindIp:/d; /^[[:space:]]*bindIpAll:/d; }' "$conf"
-  # Ensure single net: section with bindIpAll: true
-  echo -e "\nnet:\n  bindIpAll: true" >> "$conf"
+  # Remove any net: sections to avoid duplicates
+  sed -i '/^[[:space:]]*net:/,/^[[:space:]]*[a-zA-Z#]/d' "$conf"
+  # Replace bindIp: 127.0.0.1 with bindIpAll: true
+  if grep -q "^[[:space:]]*bindIp: 127.0.0.1" "$conf"; then
+    sed -i 's/^[[:space:]]*bindIp: 127.0.0.1/[[:space:]]*bindIpAll: true/' "$conf"
+  else
+    # If bindIp not found, append bindIpAll: true under network interfaces section
+    sed -i '/^[[:space:]]*# network interfaces/a\  bindIpAll: true' "$conf"
+  fi
   # Validate config
   if ! mongod --config "$conf" --dryRun >/dev/null 2>&1; then
     echo "Invalid MongoDB config after modification."
     handle_failure "MongoDB Config Validation" "/etc/mongod.conf" "cat /etc/mongod.conf" "sudo systemctl restart mongod" "Restore backup: cp /etc/mongod.conf.bak.* /etc/mongod.conf"
   fi
-  echo "Set MongoDB bindIpAll: true, removed bindIp and duplicates (cite: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/)."
+  echo "Replaced bindIp with bindIpAll: true, removed duplicate net: sections (cite: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/)."
 }
 
 start_and_wait() {
@@ -76,7 +81,7 @@ start_and_wait() {
       return 0
     fi
     echo "Waiting for $service ($i/$max_attempts)..."
-    sleep "$sleep_sec"
+    sleep "$sec"
   done
   return 1
 }
@@ -165,7 +170,7 @@ main() {
   fi
   set_mongo_bindipall
   if ! start_and_wait "mongod"; then
-    handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" "sed -i '/^[[:space:]]*bindIp:/d' /etc/mongod.conf; sed -i '/^[[:space:]]*net:/,/^[[:space:]]*[a-zA-Z#]/d; $ a\nnet:\n  bindIpAll: true' /etc/mongod.conf"
+    handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" "sed -i 's/^[[:space:]]*bindIp: 127.0.0.1/  bindIpAll: true/' /etc/mongod.conf"
   fi
   verify_service "mongod" "/var/log/mongodb/mongod.log" "27017" || handle_failure "MongoDB" "/etc/mongod.conf" "journalctl -u mongod -n 200" "sudo systemctl restart mongod" ""
 
