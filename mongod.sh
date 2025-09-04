@@ -16,7 +16,7 @@ main() {
   sudo apt-mark hold mongodb-org
 
   #Configure MongoDB
-  sudo sed -i '/bindIp/c\bindIpAll: true' /etc/mongod.conf
+  sudo sed -i '/bindIp/c\  bindIpAll: true' /etc/mongod.conf
   sudo cat /etc/mongod.conf
   sudo journalctl -u mongod -f
 }
