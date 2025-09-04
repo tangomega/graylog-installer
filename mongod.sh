@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# installer.sh: MongoDB Installer for Ubuntu Server 24.04
+# mongod.sh: MongoDB Installer for Ubuntu Server 24.04
 # Idempotent, fault-tolerant script to install and configure MongoDB 8.0, replacing bindIp with bindIpAll: true.
+# Supports auto-update with Git SSH key authentication.
 # Citation: https://www.mongodb.org/docs/manual/tutorial/install-mongodb-on-ubuntu/ for MongoDB setup.
-# Usage: sudo ./installer.sh
+# Usage: sudo ./mongod.sh [--update]
 # On failure: Prompts to run cleanup function to reset MongoDB environment.
 # Fails only if mongod is not running or port 27017 is not listening.
 
 set -euo pipefail
 IFS=$'\n\t'
+
+# Auto-update configuration (replace with your values)
+SCRIPT_URL="https://raw.githubusercontent.com/<user>/<repo>/main/mongod.sh"  # Replace with your GitHub raw URL
+EXPECTED_CHECKSUM="replace_with_actual_sha256_checksum"  # Replace with: sha256sum mongod.sh
+GIT_SSH_KEY="/root/.ssh/id_rsa"  # Replace with path to your SSH key if different
 
 LOG="/var/log/mongodb-install.log"
 touch "$LOG" && chmod 600 "$LOG" && chown root:root "$LOG"
@@ -38,6 +44,41 @@ backup_file() {
     cp -p "$file" "${file}.bak.$(date +%s)"
     echo "Backed up $file"
   fi
+}
+
+auto_update() {
+  apt_install_if_missing openssh-client
+  if [[ ! -f "$GIT_SSH_KEY" ]]; then
+    echo "Git SSH key not found at $GIT_SSH_KEY. Skipping update." >&2
+    return 1
+  fi
+  chmod 600 "$GIT_SSH_KEY"
+  mkdir -p ~/.ssh
+  cat > ~/.ssh/config <<EOF
+Host github.com
+  HostName github.com
+  User git
+  IdentityFile $GIT_SSH_KEY
+  IdentitiesOnly yes
+EOF
+  chmod 600 ~/.ssh/config
+  ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+  local tmp_script="/tmp/mongod.sh.new"
+  if ! curl -fsSL --connect-timeout 5 "$SCRIPT_URL" -o "$tmp_script"; then
+    echo "Failed to download updated script. Continuing with current version." >&2
+    return 1
+  fi
+  local checksum
+  checksum=$(sha256sum "$tmp_script" | cut -d' ' -f1)
+  if [[ "$checksum" != "$EXPECTED_CHECKSUM" ]]; then
+    echo "Checksum mismatch (got $checksum, expected $EXPECTED_CHECKSUM). Aborting update." >&2
+    rm -f "$tmp_script"
+    return 1
+  fi
+  chmod +x "$tmp_script"
+  mv "$tmp_script" "$0"
+  echo "Script updated successfully. Re-running..."
+  exec "$0" "$@"
 }
 
 set_mongo_bindipall() {
@@ -81,7 +122,7 @@ start_and_wait() {
       return 0
     fi
     echo "Waiting for $service ($i/$max_attempts)..."
-    sleep "$sec"
+    sleep "$sleep_sec"
   done
   return 1
 }
@@ -157,6 +198,10 @@ cleanup() {
 
 main() {
   require_root
+  if [[ "${1:-}" == "--update" ]]; then
+    echo "Checking for script updates..."
+    auto_update "$@"
+  fi
   echo "Starting MongoDB installer."
   apt_install_if_missing gnupg curl wget apt-transport-https
 
