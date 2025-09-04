@@ -11,7 +11,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # Auto-update configuration (replace with your values)
-SCRIPT_URL="https://raw.githubusercontent.com/<user>/<repo>/main/mongod.sh"  # Replace with your GitHub raw URL
+SCRIPT_URL="https://raw.githubusercontent.com/tangomega/graylog-installer/main/mongod.sh"  # Replace with your GitHub raw URL
 EXPECTED_CHECKSUM="replace_with_actual_sha256_checksum"  # Replace with: sha256sum mongod.sh
 GIT_SSH_KEY="/root/.ssh/id_rsa"  # Replace with path to your SSH key if different
 
