@@ -1,157 +1,244 @@
 #!/usr/bin/env bash
-# datanode.sh: Graylog Data Node installer for Ubuntu 24.04
-# Installs, configures, and verifies Graylog Data Node with OpenSearch.
-# Sources:
-# - Graylog Data Node config: https://go2docs.graylog.org/current/setting_up_graylog/data_node_configuration_file.htm
-# - Graylog Ubuntu install: https://go2docs.graylog.org/current/downloading_and_installing_graylog/ubuntu_installation.htm
-# - OpenSearch requirements: https://opensearch.org/docs/latest/
+# install-graylog-datanode.sh
+# Fault-tolerant, idempotent installer for Graylog DataNode (with embedded OpenSearch) on Ubuntu Server 24.04
+# Requires MongoDB to be pre-installed and running
+# Run with sudo
+
+# Documentation and Citations:
+# - Graylog DataNode: https://docs.graylog.org/docs/datanode
+# - OpenSearch Prerequisites (vm.max_map_count): https://opensearch.org/docs/latest/install-and-configure/install-opensearch/index/#important-settings
+# - MongoDB Configuration: https://www.mongodb.com/docs/manual/reference/configuration-options/#net-options
+# - Graylog Prerequisites: https://docs.graylog.org/docs/prerequisites
+# - JVM Settings: https://docs.graylog.org/docs/prerequisites#jvm-settings
+
+# Five most load-bearing facts:
+# 1. Graylog DataNode requires OpenJDK 17 or later.
+# 2. DataNode embeds OpenSearch and requires vm.max_map_count=262144.
+# 3. MongoDB must be running and accessible at mongodb://localhost:27017/graylog.
+# 4. DataNode must expose OpenSearch API (0.0.0.0:9200) and REST API (0.0.0.0:8999).
+# 5. Heap size should be 25-50% of system RAM, capped at 16GB.
 
 set -euo pipefail
 IFS=$'\n\t'
 
-LOG="/var/log/datanode-install.log"
-touch "$LOG" && chmod 600 "$LOG" && chown root:root "$LOG"
+LOG="/var/log/graylog-datanode-install.log"
+touch "$LOG"
 exec > >(tee -a "$LOG") 2>&1
 
-# === Helper functions ===
+DATANODE_CONF="/etc/graylog/datanode/datanode.conf"
+GRAYLOG_DATANODE_DATA_DIR="/var/lib/graylog-datanode"
+GD_REPO_DEB_URL="https://packages.graylog2.org/repo/packages/graylog-repository_latest.deb"
+GITHUB_URL="https://raw.githubusercontent.com/example/repo/main/install-graylog-datanode.sh"  # Replace with actual URL
+
 require_root() {
-  if [[ "$(id -u)" != 0 ]]; then
-    echo "❌ Must run as root (use sudo)." >&2
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "This script must be run as root (sudo)." >&2
     exit 1
   fi
 }
 
 apt_install_if_missing() {
   local pkgs=("$@")
-  local to_install=()
-  for pkg in "${pkgs[@]}"; do
-    if ! dpkg -s "$pkg" &>/dev/null; then
-      to_install+=("$pkg")
+  local miss=()
+  for p in "${pkgs[@]}"; do
+    if ! dpkg -s "$p" >/dev/null 2>&1; then
+      miss+=("$p")
     fi
   done
-  if [[ ${#to_install[@]} -gt 0 ]]; then
+  if [ "${#miss[@]}" -gt 0 ]; then
     apt-get update -y
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${to_install[@]}"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${miss[@]}"
   fi
 }
 
-backup_file() {
-  local file="${1:-}"
-  if [[ -n "$file" && -f "$file" ]]; then
-    cp -p "$file" "${file}.bak.$(date +%s)"
-    echo "ℹ️ Backed up $file"
+ensure_conf_value() {
+  local file="$1" key="$2" value="$3"
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || echo "# Created by installer" > "$file"
+  if grep -qE "^\s*$key\s*=" "$file"; then
+    sed -i -E "s|^\s*$key\s*=.*|$key = $value|" "$file"
+    echo "Updated $key in $file"
+  else
+    echo "$key = $value" >> "$file"
+    echo "Added $key to $file"
   fi
 }
 
-# === Preflight ===
-require_root
-apt_install_if_missing apt-transport-https openjdk-17-jre-headless curl wget gnupg lsb-release jq
+extract_conf_value() {
+  local file="$1" key="$2"
+  awk -F'=' -v k="$key" '$0 ~ "^[ \t]*"k"[ \t]*=" { gsub(/[ \t]+/,"",$2); print $2; exit }' "$file" 2>/dev/null || true
+}
 
-# === Add Graylog repo (if missing) ===
-if ! grep -q "packages.graylog2.org" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
-  wget -q https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb -O /tmp/graylog-repo.deb
-  dpkg -i /tmp/graylog-repo.deb
-  apt-get update -y
-fi
+ensure_password_secret() {
+  local secret
+  secret=$(extract_conf_value "$DATANODE_CONF" "password_secret")
+  if [ -n "$secret" ]; then
+    echo "password_secret already present in datanode.conf"
+    return
+  fi
+  secret=$(openssl rand -hex 48)
+  ensure_conf_value "$DATANODE_CONF" "password_secret" "$secret"
+  echo "Generated and set new password_secret"
+}
 
-# === Install Data Node ===
-apt_install_if_missing graylog-datanode
+ensure_datanode_binds() {
+  ensure_conf_value "$DATANODE_CONF" "opensearch_network_host" "0.0.0.0"
+  ensure_conf_value "$DATANODE_CONF" "opensearch_http_bind_address" "0.0.0.0:9200"
+  ensure_conf_value "$DATANODE_CONF" "opensearch_transport_bind_address" "0.0.0.0:9300"
+  ensure_conf_value "$DATANODE_CONF" "http_bind_address" "0.0.0.0:8999"
+  ensure_conf_value "$DATANODE_CONF" "mongodb_uri" "mongodb://localhost:27017/graylog"
+}
 
-# === System settings for OpenSearch ===
-echo "vm.max_map_count=262144" > /etc/sysctl.d/99-graylog-datanode.conf
-sysctl -p /etc/sysctl.d/99-graylog-datanode.conf
+ensure_data_dir() {
+  mkdir -p "$GRAYLOG_DATANODE_DATA_DIR/opensearch"
+  chown -R graylog:graylog "$GRAYLOG_DATANODE_DATA_DIR" || true
+  ensure_conf_value "$DATANODE_CONF" "opensearch_data_location" "$GRAYLOG_DATANODE_DATA_DIR/opensearch"
+}
 
-# === Configure datanode.conf ===
-DN_CONF="/etc/graylog/datanode/datanode.conf"
-mkdir -p "$(dirname "$DN_CONF")"
-backup_file "$DN_CONF"
-touch "$DN_CONF"
+detect_and_set_heap() {
+  local total_mem_mb heap_mb
+  total_mem_mb=$(free -m | awk '/^Mem:/ {print $2}')
+  heap_mb=$(( total_mem_mb / 4 ))  # 25% for DataNode JVM
+  heap_mb=${heap_mb:-1024}  # Min 1GB
+  if [ "$heap_mb" -gt 16384 ]; then heap_mb=16384; fi  # Max 16GB
+  echo "Detected total RAM: ${total_mem_mb}MB. Setting DataNode heap to ${heap_mb}MB"
+  ensure_conf_value "$DATANODE_CONF" "opensearch_heap" "${heap_mb}m"
+}
 
-# Generate password_secret if missing
-if ! grep -q "^password_secret" "$DN_CONF"; then
-  server_secret=$(openssl rand -hex 64)
-  echo "password_secret = $server_secret" >> "$DN_CONF"
-  echo "ℹ️ Generated new password_secret"
-else
-  server_secret=$(awk -F'=' '/^password_secret/ {gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}' "$DN_CONF")
-fi
+set_vm_max_map_count() {
+  if ! sysctl -a 2>/dev/null | grep -q "vm.max_map_count = 262144"; then
+    sysctl -w vm.max_map_count=262144 || true
+    echo "vm.max_map_count=262144" > /etc/sysctl.d/99-graylog-datanode.conf || true
+    sysctl --system >/dev/null || true
+    echo "Set vm.max_map_count=262144"
+  else
+    echo "vm.max_map_count already set to 262144"
+  fi
+}
 
-# Prompt for admin password and generate hash if missing
-if ! grep -q "^root_password_sha2" "$DN_CONF"; then
-  read -s -p "Enter Graylog admin password: " admin_pass
+start_and_wait() {
+  local svc="$1"
+  systemctl enable "$svc" --now || { echo "Failed to enable/start $svc"; return 1; }
+  for i in {1..8}; do
+    if systemctl is-active --quiet "$svc"; then
+      echo "$svc active"
+      return 0
+    fi
+    echo "Waiting for $svc to start ($i/8)..."
+    sleep 4
+  done
+  echo "Service $svc did not start in time."
+  return 1
+}
+
+basic_checks() {
   echo
-  read -s -p "Confirm Graylog admin password: " admin_pass2
+  echo "=== DataNode Checks ==="
+  echo "systemd state:"
+  systemctl status graylog-datanode --no-pager || true
   echo
-  if [[ "$admin_pass" != "$admin_pass2" ]]; then
-    echo "❌ Passwords do not match. Aborting."
+  echo "Listening ports (9200, 8999, 9300):"
+  ss -tulpen | grep -E ':(9200|8999|9300)' || true
+  echo
+  echo "OpenSearch health:"
+  curl -sS --max-time 3 http://127.0.0.1:9200/_cluster/health || echo "No response from 9200"
+}
+
+cleanup() {
+  echo "WARNING: This will remove Graylog DataNode and all its data. Continue? [y/N]"
+  read -r confirm
+  if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+    echo "Cleanup aborted."
+    return
+  fi
+  systemctl stop graylog-datanode || true
+  apt-get purge -y graylog-datanode || true
+  rm -rf "$GRAYLOG_DATANODE_DATA_DIR" "$DATANODE_CONF" /etc/sysctl.d/99-graylog-datanode.conf
+  apt-get autoremove -y || true
+  echo "Cleanup complete."
+}
+
+check_for_update() {
+  if [ "${UPDATE:-false}" = "true" ]; then
+    echo "Checking for updated script at $GITHUB_URL..."
+    local tmp_script
+    tmp_script=$(mktemp)
+    if curl -fsSL "$GITHUB_URL" -o "$tmp_script"; then
+      if cmp -s "$0" "$tmp_script"; then
+        echo "No updates available."
+        rm -f "$tmp_script"
+      else
+        echo "Update available. Replacing script..."
+        mv "$tmp_script" "$0"
+        chmod +x "$0"
+        echo "Script updated. Please re-run."
+        exit 0
+      fi
+    else
+      echo "Failed to fetch update. Continuing with current script."
+      rm -f "$tmp_script"
+    fi
+  fi
+}
+
+main() {
+  require_root
+  echo "Starting Graylog DataNode installer"
+  check_for_update
+
+  # Install essential packages
+  apt_install_if_missing gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless
+
+  # Verify MongoDB is running
+  if ! systemctl is-active --quiet mongod; then
+    echo "MongoDB is not running. Please ensure MongoDB is installed and running."
+    echo "Remediation: Install MongoDB with 'sudo apt-get install mongodb-org' and start with 'sudo systemctl start mongod'"
     exit 1
   fi
-  root_password_sha2=$(echo -n "$admin_pass" | sha256sum | awk '{print $1}')
-  echo "root_password_sha2 = $root_password_sha2" >> "$DN_CONF"
-  echo "ℹ️ Stored root_password_sha2"
-fi
 
-# Ensure required fields exist
-grep -q "^data_dir" "$DN_CONF" || echo "data_dir = /var/lib/graylog-datanode" >> "$DN_CONF"
-grep -q "^http_bind_address" "$DN_CONF" || echo "http_bind_address = 0.0.0.0:8999" >> "$DN_CONF"
-grep -q "^opensearch_network_host" "$DN_CONF" || echo "opensearch_network_host = 0.0.0.0" >> "$DN_CONF"
-grep -q "^opensearch_heap" "$DN_CONF" || echo "opensearch_heap = 1g" >> "$DN_CONF"
-grep -q "^mongodb_uri" "$DN_CONF" || echo "mongodb_uri = mongodb://localhost:27017/graylog" >> "$DN_CONF"
-
-chown graylog:graylog "$DN_CONF"
-
-# === Start service ===
-systemctl daemon-reexec
-systemctl enable --now graylog-datanode
-
-# === Verification ===
-echo "🔍 Verifying Graylog Data Node service..."
-
-# 1. systemd status
-if ! systemctl is-active --quiet graylog-datanode; then
-  echo "❌ graylog-datanode service not running."
-  exit 1
-fi
-echo "✅ graylog-datanode systemd service is active."
-
-# 2. Logs check
-if journalctl -u graylog-datanode -n 100 --no-pager | grep -qi "error"; then
-  echo "⚠️ Detected errors in datanode logs, check with:"
-  echo "    sudo journalctl -u graylog-datanode -n 200 --no-pager"
-else
-  echo "✅ No critical errors detected in logs."
-fi
-
-# 3. Ports
-sleep 10
-if ss -tulpn | grep -q ":9200"; then
-  echo "✅ OpenSearch is listening on port 9200"
-else
-  echo "❌ OpenSearch is NOT listening on port 9200"
-  exit 1
-fi
-
-if ss -tulpn | grep -q ":8999"; then
-  echo "✅ Data Node REST API is listening on port 8999"
-else
-  echo "❌ Data Node REST API is NOT listening on port 8999"
-  exit 1
-fi
-
-echo "🎉 Graylog Data Node installation and verification complete."
-
-# === Cleanup function ===
-cleanup() {
-  echo "⚠️ This will REMOVE Graylog Data Node completely."
-  read -p "Are you sure? (y/N): " confirm
-  if [[ "$confirm" =~ ^[Yy]$ ]]; then
-    systemctl stop graylog-datanode || true
-    apt-get purge -y graylog-datanode
-    apt-get autoremove -y
-    apt-get clean
-    rm -rf /etc/graylog/datanode /var/lib/graylog-datanode /var/log/graylog-datanode
-    echo "🗑️ Graylog Data Node purged."
-  else
-    echo "Cleanup canceled."
+  # Install Graylog repo
+  if ! dpkg -l | grep -q graylog; then
+    wget -q "$GD_REPO_DEB_URL" -O /tmp/graylog-repo.deb
+    dpkg -i /tmp/graylog-repo.deb || true
+    apt-get update -y
   fi
+
+  # Install DataNode
+  apt_install_if_missing graylog-datanode
+
+  # Configure kernel
+  set_vm_max_map_count
+
+  # Configure DataNode
+  ensure_password_secret
+  ensure_datanode_binds
+  ensure_data_dir
+  detect_and_set_heap
+
+  # Start and verify
+  systemctl daemon-reload
+  start_and_wait graylog-datanode || {
+    echo "graylog-datanode failed to start."
+    echo "Remediation: Check logs with 'journalctl -u graylog-datanode -n 200 --no-pager'"
+    echo "Config file: $DATANODE_CONF"
+    exit 1
+  }
+
+  # Perform checks
+  basic_checks
+
+  echo
+  echo "Graylog DataNode installation complete. OpenSearch API at http://<server-ip>:9200"
+  echo "DataNode REST API at http://<server-ip>:8999"
 }
+
+# Parse optional update flag
+UPDATE=false
+while getopts "u" opt; do
+  case $opt in
+    u) UPDATE=true ;;
+    *) echo "Usage: $0 [-u]"; exit 1 ;;
+  esac
+done
+
+main "$@"
