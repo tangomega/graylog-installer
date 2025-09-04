@@ -249,33 +249,9 @@ cleanup() {
   echo "Cleanup complete."
 }
 
-check_for_update() {
-  if [ "${UPDATE:-false}" = "true" ]; then
-    echo "Checking for updated script at $GITHUB_URL..."
-    local tmp_script
-    tmp_script=$(mktemp)
-    if curl -fsSL "$GITHUB_URL" -o "$tmp_script"; then
-      if cmp -s "$0" "$tmp_script"; then
-        echo "No updates available."
-        rm -f "$tmp_script"
-      else
-        echo "Update available. Replacing script..."
-        mv "$tmp_script" "$0"
-        chmod +x "$0"
-        echo "Script updated. Please re-run."
-        exit 0
-      fi
-    else
-      echo "Failed to fetch update. Continuing with current script."
-      rm -f "$tmp_script"
-    fi
-  fi
-}
-
 main() {
   require_root
   echo "Starting Graylog DataNode installer"
-  check_for_update
 
   # Install essential packages
   apt_install_if_missing gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless
