@@ -21,11 +21,11 @@ main() {
   #Configure MongoDB
   sudo sed -i '/bindIp/c\  bindIpAll: true' /etc/mongod.conf
   sudo cat /etc/mongod.conf
-  sudo journalctl -u mongod -f
-
+ 
   sudo systemctl daemon-reload
   sudo systemctl enable mongod.service
   sudo systemctl start mongod.service
+  sudo systemctl status mongod
 }
 
 main "$@"
