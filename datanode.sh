@@ -6,9 +6,6 @@ IFS=$'\n\t'
 main() {
   echo "Starting Graylog DataNode installer"
 
-  #Remove old files
-  sudo systemctl stop graylog-datanode && sudo apt purge --autoremove -y graylog-datanode && sudo rm -rf /etc/graylog/datanode /var/lib/graylog-datanode /var/log/graylog-datanode && sudo apt update
-
   # Install essential packages
   sudo apt install -y gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless
 
