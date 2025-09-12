@@ -20,7 +20,7 @@ ___________                      ___________           .__        _________     
   |    |   |  | \/  |  /\  ___/    |    |\  ___/\  \___|   Y  \  /        \___  |\___ \  |  | \  ___/|  Y Y  \\___ \ 
   |____|   |__|  |____/  \___  >   |____| \___  >\___  >___|  / /_______  / ____/____  > |__|  \___  >__|_|  /____  >
                              \/               \/     \/     \/          \/\/         \/            \/      \/     \/                    
-         MongoDB + Graylog Installer (with hacker progress bar 🏃)
+         MongoDB + Graylog Installer (0.1)
 EOF
 }
 
@@ -44,7 +44,6 @@ log() {
   echo -e "${GREEN}[+]${RESET} $1"
 }
 
-# --- Stick Figure Progress Bar ---
 spinner_with_runner() {
   local pid=$1
   local msg=$2
@@ -61,7 +60,6 @@ spinner_with_runner() {
     local bar=$(printf "%0.s#" $(seq 1 $filled))
     local space=$(printf "%0.s " $(seq 1 $empty))
     local frame=${frames[$((progress % ${#frames[@]}))]}
-
     printf "\r[%s%s] %s %s" "$bar" "$space" "$frame" "$msg"
     sleep $delay
     progress=$((progress+1))
@@ -70,7 +68,6 @@ spinner_with_runner() {
   printf "\r[%s] ✅ %s\n" "$(printf "%0.s#" $(seq 1 $width))" "$msg"
 }
 
-# --- APT Install Wrapper ---
 apt_with_animation() {
   local msg=$1; shift
   sudo apt-get update -y >/dev/null 2>&1 &
@@ -83,73 +80,81 @@ apt_with_animation() {
 }
 
 ensure_prereqs() {
-  section "Preparing minimal system prerequisites"
-  type_echo "[HACKER] Ensuring prerequisites are present..."
-  apt_with_animation "Installing prerequisites" ca-certificates apt-transport-https gnupg curl wget lsb-release software-properties-common openssl jq
+  section "Preparing System Prerequisites"
+  type_echo "[HACKER] Ensuring essential tools are present..."
+  apt_with_animation "Installing prerequisites" gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless lsb-release
 }
 
 add_mongodb_repo() {
-  section "Adding MongoDB repository"
-  type_echo "[HACKER] Adding official MongoDB APT repo..."
-  local codename
-  codename=$(lsb_release -sc)
-  curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
-  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu ${codename}/mongodb-org/8.0 multiverse" \
-    | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list >/dev/null
+  section "Adding MongoDB Repository"
+  type_echo "[HACKER] Configuring MongoDB APT repository..."
+  curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list >/dev/null
   sudo apt-get update -y >/dev/null
 }
 
 install_mongodb() {
   section "MongoDB Installation"
-  type_echo "[HACKER] Deploying MongoDB v8.0 to localhost..."
+  type_echo "[HACKER] Deploying MongoDB..."
   log "Stopping mongod if running"
   sudo systemctl stop mongod.service >/dev/null 2>&1 || true
 
-  if dpkg-query -W -f='${Status}' mongodb-org 2>/dev/null | grep -q "installed"; then
-    log "Purging existing mongodb-org installation"
-    sudo apt-get purge -y mongodb-org* >/dev/null 2>&1 || true
-    sudo rm -rf /var/log/mongodb /var/lib/mongodb
-  else
-    log "No existing mongodb-org package detected; skipping purge"
-  fi
+  log "Purging old MongoDB installation"
+  sudo apt-get purge -y mongodb-org* >/dev/null 2>&1 || true
+  sudo rm -rf /var/log/mongodb /var/lib/mongodb
 
-  apt_with_animation "Installing MongoDB (8.0)" mongodb-org
+  apt_with_animation "Installing MongoDB 8.0" mongodb-org
+  sudo apt-mark hold mongodb-org >/dev/null
 
-  log "Holding mongodb-org packages"
-  sudo apt-mark hold mongodb-org* >/dev/null || true
-
-  if grep -qE '^\s*bindIp' /etc/mongod.conf >/dev/null 2>&1; then
-    sudo sed -i -r 's@(^\s*bindIp\s*:\s*).*@\10.0.0.0@' /etc/mongod.conf
-  else
-    echo -e "\nnet:\n  bindIp: 0.0.0.0" | sudo tee -a /etc/mongod.conf >/dev/null
-  fi
+  log "Configuring mongod bind IP"
+  sudo sed -i '/bindIp/c\  bindIpAll: true' /etc/mongod.conf
 
   sudo systemctl daemon-reload
-  sudo systemctl enable --now mongod.service
+  sleep 2
+  sudo systemctl enable mongod.service
+  sleep 2
+  sudo systemctl start mongod.service
+  sleep 2
 }
 
-add_and_install_graylog() {
+install_graylog() {
   section "Graylog DataNode & Server Installation"
   type_echo "[HACKER] Installing Graylog components..."
-  apt_with_animation "Installing Java 17 + tools" openjdk-17-jre-headless jq
+  apt_with_animation "Installing Graylog tools" graylog-datanode graylog-server
 
-  log "Adding Graylog repository"
-  wget -q https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb -O /tmp/graylog-repo.deb
-  sudo dpkg -i /tmp/graylog-repo.deb >/dev/null 2>&1 || true
-  sudo apt-get update -y >/dev/null
-
-  apt_with_animation "Installing Graylog datanode + server" graylog-datanode graylog-server
-
+  log "Setting DataNode configurations"
   echo 'vm.max_map_count=262144' | sudo tee /etc/sysctl.d/99-graylog-datanode.conf >/dev/null
   sudo sysctl --system >/dev/null
 
-  sudo sed -i "/^mongodb_uri/c\mongodb_uri = mongodb://127.0.0.1:27017/graylog" /etc/graylog/datanode/datanode.conf || true
-  if ! grep -q '^opensearch_heap' /etc/graylog/datanode/datanode.conf 2>/dev/null; then
-    echo "opensearch_heap = 2g" | sudo tee -a /etc/graylog/datanode/datanode.conf >/dev/null
-  fi
+  sudo sed -i "/password_secret/c\\password_secret = $(openssl rand -hex 32)" /etc/graylog/datanode/datanode.conf
+  sudo sed -i "/mongodb_uri/c\\mongodb_uri = mongodb://127.0.0.1:27017/graylog" /etc/graylog/datanode/datanode.conf
+  echo "opensearch_heap = 4g" | sudo tee -a /etc/graylog/datanode/datanode.conf >/dev/null
 
-  sudo systemctl enable --now graylog-datanode.service
-  sudo systemctl enable --now graylog-server.service
+  sudo systemctl daemon-reload
+  sleep 2
+  sudo systemctl enable graylog-datanode.service
+  sleep 2
+  sudo systemctl start graylog-datanode
+  sleep 2
+
+  log "Configuring Graylog Server"
+  sudo sed -i "/password_secret/c$(sed -n '/password_secret/{p;q}' /etc/graylog/datanode/datanode.conf)" /etc/graylog/server/server.conf
+  sudo sed -i '0,/http_bind_address/{s|.*http_bind_address.*|http_bind_address = 0.0.0.0:9000|}' /etc/graylog/server/server.conf
+
+  read -sp "Enter Password for Graylog Admin: " pw && echo
+  hash=$(echo -n "$pw" | sha256sum | cut -d' ' -f1)
+  sudo sed -i "/^root_password_sha2 =/c\root_password_sha2 = $hash" /etc/graylog/server/server.conf
+
+  sudo sed -i '/^GRAYLOG_SERVER_JAVA_OPTS="-Xms1g/c\GRAYLOG_SERVER_JAVA_OPTS="-Xms2g -Xmx2g -server -XX:+UseG1GC -XX:-OmitStackTraceInFastThrow"' /etc/default/graylog-server
+  sudo systemctl daemon-reload
+  sleep 2
+  sudo systemctl enable graylog-server.service
+  sleep 2
+  sudo systemctl start graylog-server.service
+  sleep 5
+
+  log "Graylog Server is live! Tail logs to monitor activity:"
+  echo -e "${CYAN}sudo tail -f /var/log/graylog-server/server.log${RESET}"
 }
 
 main() {
@@ -160,12 +165,10 @@ main() {
   ensure_prereqs
   add_mongodb_repo
   install_mongodb
-  add_and_install_graylog
+  install_graylog
 
   section "System Ready"
-  type_echo "[HACKER] Graylog is alive (if services are up)."
-  echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
-  echo -e "${CYAN}Tail logs:${RESET} sudo tail -f /var/log/graylog-server/server.log"
+  type_echo "[HACKER] MongoDB & Graylog deployed successfully!"
 }
 
 main "$@"
