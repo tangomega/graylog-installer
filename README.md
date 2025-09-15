@@ -5,19 +5,6 @@ This repository contains an **automated Bash script** to install and configure a
 The setup is designed for **local lab environments** and is compatible with network devices like FortiGate for syslog ingestion.
 
 ---
-
-## **Table of Contents**
-
-- [Prerequisites](#prerequisites)  
-- [Installation](#installation)  
-- [Features](#features)  
-- [Configuration](#configuration)  
-- [Testing Log Ingestion](#testing-log-ingestion)  
-- [Security Recommendations](#security-recommendations)  
-- [Uninstallation](#uninstallation)  
-
----
-
 ## **Prerequisites**
 
 - Ubuntu 24.04 / Debian 11+  
@@ -30,10 +17,10 @@ The setup is designed for **local lab environments** and is compatible with netw
 
 ## **Installation**
 
-1. **Clone or copy the script** to your server:
-
 ```bash
 git clone https://github.com/tangomega/graylog-installer
 cd graylog-installer
 chmod +x *
 sudo ./installer.sh
+
+
