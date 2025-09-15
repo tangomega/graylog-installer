@@ -23,7 +23,7 @@ cat << "EOF"
         \|__|  \|__|\|__|\|_______|\|_______|            \|__|  \|_______|\|_______|\|__|\|__|       |\_________\\___/ /       |\_________\   \|__|  \|_______|\|__|     \|__|\_________\
                                                                                                      \|_________\|___|/        \|_________|                                  \|_________|
                                                                                                                                                                                                                                                                                                                  
-         MongoDB + Graylog Installer (v0.2)
+         MongoDB + Graylog Installer (v0.4)
 EOF
 }
 
@@ -82,6 +82,17 @@ apt_with_animation() {
 
   sudo apt-get install -y "$@" >/dev/null 2>&1 &
   spinner_with_runner $! "$msg"
+  wait $! || true
+}
+
+# --- APT Purge Wrapper ---
+purge_with_animation() {
+  local msg=$1; shift
+  sudo apt-get purge -y "$@" >/dev/null 2>&1 &
+  spinner_with_runner $! "$msg"
+  wait $! || true
+  sudo apt-get autoremove -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Cleaning up unused dependencies..."
   wait $! || true
 }
 
@@ -145,8 +156,12 @@ configure_graylog_datanode() {
   log "Password secret generated."
   sudo sed -i "/mongodb_uri/c\\mongodb_uri = mongodb://127.0.0.1:27017/graylog" /etc/graylog/datanode/datanode.conf || true
   log "MongoDB URI set."
-  echo "opensearch_heap = 4g" >> /etc/graylog/datanode/datanode.conf
-  log "OpenSearch heap set."
+  # Calculate half of system RAM for opensearch_heap
+  total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+  half_ram_mb=$((total_ram_kb / 1024 / 2))
+  half_ram_gb=$(( (half_ram_mb + 512) / 1024 ))  # Round to nearest GB
+  echo "opensearch_heap = ${half_ram_gb}g" >> /etc/graylog/datanode/datanode.conf
+  log "OpenSearch heap set to ${half_ram_gb} GB (half of system RAM)."
   sudo systemctl daemon-reload >/dev/null 2>&1
   sleep 2
   log "Daemon reloaded."
@@ -176,7 +191,7 @@ install_graylog_server() {
   sudo systemctl daemon-reload >/dev/null 2>&1
   sleep 2
   log "Daemon reloaded."
-  sudo systemctl enable graylog-server.service >/dev/null 2>&1
+  sudo systemctl enable graylog-server.service >/div/null 2>&1
   sleep 2
   log "Server service enabled."
   sudo systemctl start graylog-server.service >/dev/null 2>&1
@@ -184,26 +199,72 @@ install_graylog_server() {
   log "Server service started."
 }
 
+uninstall_everything() {
+  section "Uninstalling MongoDB and Graylog"
+  type_echo "[HACKER] Initiating complete removal of MongoDB and Graylog components..."
+
+  # Stop and disable services
+  type_echo "[HACKER] Stopping and disabling services..."
+  for service in graylog-server.service graylog-datanode.service mongod.service; do
+    if systemctl is-active --quiet $service; then
+      sudo systemctl stop $service >/dev/null 2>&1 &
+      spinner_with_runner $! "Stopping $service..."
+    fi
+    if systemctl is-enabled --quiet $service; then
+      sudo systemctl disable $service >/dev/null 2>&1 &
+      spinner_with_runner $! "Disabling $service..."
+    fi
+  done
+  log "All services stopped and disabled."
+
+  # Purge packages
+  type_echo "[HACKER] Removing installed packages..."
+  purge_with_animation "Purging Graylog and MongoDB packages" graylog-server graylog-datanode mongodb-org mongodb-org-*
+  log "Packages purged."
+
+  # Remove configuration files, logs, and data
+  type_echo "[HACKER] Cleaning up configuration files and data..."
+  sudo rm -rf /etc/graylog /var/log/graylog-server /var/log/graylog-datanode /var/lib/mongodb /var/log/mongodb /etc/sysctl.d/99-graylog-datanode.conf /tmp/graylog-repo.deb >/dev/null 2>&1 &
+  spinner_with_runner $! "Removing configuration files, logs, and data..."
+  log "Configurations and data removed."
+
+  # Remove repositories
+  type_echo "[HACKER] Removing MongoDB and Graylog repositories..."
+  sudo rm -f /etc/apt/sources.list.d/mongodb-org-8.0.list /etc/apt/sources.list.d/graylog.list /usr/share/keyrings/mongodb-server-8.0.gpg >/dev/null 2>&1 &
+  spinner_with_runner $! "Removing repository configurations..."
+  sudo apt-get update -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Updating package lists..."
+  log "Repositories removed."
+
+  section "Uninstallation Complete"
+  type_echo "[HACKER] MongoDB and Graylog have been completely removed."
+  echo -e "${CYAN}System Status:${RESET} Clean"
+}
+
 main() {
   clear
   ascii_banner
   sleep 1
 
-  ensure_prereqs
-  add_mongodb_repo
-  configure_mongodb
-  install_graylog_datanode
-  configure_graylog_datanode
-  install_graylog_server
+  if [[ "$1" == "--uninstall" ]]; then
+    uninstall_everything
+  else
+    ensure_prereqs
+    add_mongodb_repo
+    configure_mongodb
+    install_graylog_datanode
+    configure_graylog_datanode
+    install_graylog_server
 
-  section "Tailing Graylog Server Log"
-  type_echo "[HACKER] Displaying recent log entries for verification..."
-  tail /var/log/graylog-server/server.log
+    section "Tailing Graylog Server Log"
+    type_echo "[HACKER] Displaying recent log entries for verification..."
+    tail /var/log/graylog-server/server.log
 
-  section "Installation Complete"
-  type_echo "[HACKER] Graylog is alive (if services are up)."
-  echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
-  echo -e "${CYAN}Tail logs:${RESET} sudo tail -f /var/log/graylog-server/server.log"
+    section "Installation Complete"
+    type_echo "[HACKER] Graylog is alive (if services are up)."
+    echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
+    echo -e "${CYAN}Tail logs:${RESET} sudo tail -f /var/log/graylog-server/server.log"
+  fi
 }
 
 main "$@"
