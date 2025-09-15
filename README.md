@@ -18,9 +18,4 @@ The setup is designed for **local lab environments** and is compatible with netw
 ## **Installation**
 
 ```bash
-git clone https://github.com/tangomega/graylog-installer
-cd graylog-installer
-chmod +x *
-sudo ./installer.sh
-
-
+git clone https://github.com/tangomega/graylog-installer && cd graylog-installer && chmod +x * && sudo ./installer.sh
