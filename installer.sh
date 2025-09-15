@@ -2,143 +2,208 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# ============================
-#   ULTRA-HACKER INSTALLER
-#   (Commands untouched)
-# ============================
+# Colors & Effects
+GREEN="\033[0;32m"
+CYAN="\033[0;36m"
+MAGENTA="\033[0;35m"
+RESET="\033[0m"
+BOLD="\033[1m"
 
-# Colors & effects
-CSI="\033["
-RESET="${CSI}0m"
-BOLD="${CSI}1m"
-DIM="${CSI}2m"
+DEBIAN_FRONTEND=noninteractive
+export DEBIAN_FRONTEND
 
-NEON1="${CSI}38;5;82m"    # green-ish
-NEON2="${CSI}38;5;45m"    # cyan
-NEON3="${CSI}38;5;201m"   # magenta
-NEON4="${CSI}38;5;208m"   # orange
-ERROR="${CSI}38;5;196m"   # red
-WARN="${CSI}38;5;220m"    # yellow
-OK="${CSI}38;5;112m"      # light green
-
-# --- ASCII Banner ---
 ascii_banner() {
 cat << "EOF"
-___________                      ___________           .__        _________               __                         
-\__    ___/______ __ __   ____   \__    ___/___   ____ |  |__    /   _____/__.__. _______/  |_  ____   _____   ______
-  |    |  \_  __ \  |  \_/ __ \    |    |_/ __ \_/ ___\|  |  \   \_____  <   |  |/  ___/\   __\/ __ \ /     \ /  ___/
-  |    |   |  | \/  |  /\  ___/    |    |\  ___/\  \___|   Y  \  /        \___  |\___ \  |  | \  ___/|  Y Y  \\___ \ 
-  |____|   |__|  |____/  \___  >   |____| \___  >\___  >___|  / /_______  / ____/____  > |__|  \___  >__|_|  /____  >
-                             \/               \/     \/     \/          \/\/         \/            \/      \/     \/                    
-         MongoDB + Graylog Installer (0.1)
+ _________  ________  ___  ___  _______           _________  _______   ________  ___  ___          ________       ___    ___ ________  _________  _______   _____ ______   ________      
+|\___   ___\\   __  \|\  \|\  \|\  ___ \         |\___   ___\\  ___ \ |\   ____\|\  \|\  \        |\   ____\     |\  \  /  /|\   ____\|\___   ___\\  ___ \ |\   _ \  _   \|\   ____\     
+\|___ \  \_\ \  \|\  \ \  \\\  \ \   __/|        \|___ \  \_\ \   __/|\ \  \___|\ \  \\\  \       \ \  \___|_    \ \  \/  / | \  \___|\|___ \  \_\ \   __/|\ \  \\\__\ \  \ \  \___|_    
+     \ \  \ \ \   _  _\ \  \\\  \ \  \_|/__           \ \  \ \ \  \_|/_\ \  \    \ \   __  \       \ \_____  \    \ \    / / \ \_____  \   \ \  \ \ \  \_|/_\ \  \\|__| \  \ \_____  \   
+      \ \  \ \ \  \\  \\ \  \\\  \ \  \_|\ \           \ \  \ \ \  \_|\ \ \  \____\ \  \ \  \       \|____|\  \    \/  /  /   \|____|\  \   \ \  \ \ \  \_|\ \ \  \    \ \  \|____|\  \  
+       \ \__\ \ \__\\ _\\ \_______\ \_______\           \ \__\ \ \_______\ \_______\ \__\ \__\        ____\_\  \ __/  / /       ____\_\  \   \ \__\ \ \_______\ \__\    \ \__\____\_\  \ 
+        \|__|  \|__|\|__|\|_______|\|_______|            \|__|  \|_______|\|_______|\|__|\|__|       |\_________\\___/ /       |\_________\   \|__|  \|_______|\|__|     \|__|\_________\
+                                                                                                     \|_________\|___|/        \|_________|                                  \|_________|
+                                                                                                                                                                                                                                                                                                                 
+         MongoDB + Graylog Installer (v0.2)
 EOF
 }
 
-# --- utility visuals ---
-typewriter() {
+type_echo() {
   local text="$1"
-  local delay=${2:-0.008}
-  for ((i=0;i<${#text};i++)); do
-    printf "%s" "${text:i:1}"
+  local delay="${2:-0.01}"
+  for ((i=0; i<${#text}; i++)); do
+    printf "%s" "${text:$i:1}"
     sleep "$delay"
   done
   printf "\n"
 }
 
-pretty_box() {
-  local title="$1"
-  printf "\n${NEON2}╔════════════════════════════════════════════════════════╗${RESET}\n"
-  printf "${NEON2}║${RESET} ${BOLD}${NEON3}% -35s${RESET} ${NEON2}║${RESET}\n" "$title"
-  printf "${NEON2}╚════════════════════════════════════════════════════════╝${RESET}\n\n"
+section() {
+  echo -e "\n${CYAN}============================================================${RESET}"
+  echo -e "${MAGENTA}${BOLD}>> $1${RESET}"
+  echo -e "${CYAN}============================================================${RESET}\n"
 }
 
-glow_progress() {
-  local msg="$1"; local secs=${2:-2}
-  printf "${NEON2}["
-  local steps=30
-  local sleep_t=$(awk "BEGIN {print $secs/$steps}")
-  for ((i=1;i<=steps;i++)); do
-    printf "${NEON1}#${RESET}"
-    sleep "$sleep_t"
+log() {
+  echo -e "${GREEN}[+]${RESET} $1"
+}
+
+# --- Stick Figure Progress Bar ---
+spinner_with_runner() {
+  local pid=$1
+  local msg=$2
+  local delay=0.1
+  local frames=("🏃" "🏃‍♂️" "🏃‍♀️")
+  local width=30
+  local progress=0
+
+  echo -ne "$msg\n"
+
+  while kill -0 $pid 2>/dev/null; do
+    local filled=$((progress % (width+1)))
+    local empty=$((width - filled))
+    local bar=$(printf "%0.s#" $(seq 1 $filled))
+    local space=$(printf "%0.s " $(seq 1 $empty))
+    local frame=${frames[$((progress % ${#frames[@]}))]}
+
+    printf "\r[%s%s] %s %s" "$bar" "$space" "$frame" "$msg"
+    sleep $delay
+    progress=$((progress+1))
   done
-  printf "${NEON2}]${RESET} ${OK}${msg}${RESET}\n"
+
+  printf "\r[%s] ✅ %s\n" "$(printf "%0.s#" $(seq 1 $width))" "$msg"
 }
 
-sig_line() {
-  echo -e "${NEON4}────────────────────────────────────────────────────────${RESET}"
+# --- APT Install Wrapper ---
+apt_with_animation() {
+  local msg=$1; shift
+  sudo apt-get update -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Updating apt sources..."
+  wait $! || true
+
+  sudo apt-get install -y "$@" >/dev/null 2>&1 &
+  spinner_with_runner $! "$msg"
+  wait $! || true
 }
 
-# --- Start ---
-ascii_banner
-sleep 0.6
-typewriter "${NEON2}Boot sequence complete. Loading installer routines..." 0.007
-sig_line
-typewriter "${NEON1}Tip: All commands are preserved verbatim. This script adds only visual flair." 0.006
-sig_line
+ensure_prereqs() {
+  section "Installing Essential Packages"
+  type_echo "[HACKER] Ensuring prerequisites are present..."
+  apt_with_animation "Installing gnupg, curl, lsb-release" gnupg curl lsb-release
+}
 
-# ========== ORIGINAL INSTALL STEPS ==========
-main() {
-  pretty_box "${BOLD}Phase 1 — Essentials & MongoDB${RESET}"
-  typewriter "${NEON3}→ Updating apt and installing base tools..." 0.006
-  glow_progress "Preparing package database" 0.8
+add_mongodb_repo() {
+  section "Installing MongoDB"
+  type_echo "[HACKER] Adding official MongoDB APT repo..."
+  curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor >/dev/null 2>&1 &
+  spinner_with_runner $! "Adding MongoDB GPG key..."
+  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list >/dev/null
+  log "Repository configured."
+  sudo apt-get update -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Updating package lists..."
+  apt_with_animation "Installing MongoDB" mongodb-org
+  sudo apt-mark hold mongodb-org >/dev/null || true
+  log "MongoDB version held."
+}
 
-  # Install essential packages
-  sudo apt-get update
-  sudo apt-get install -y gnupg curl lsb-release
-
-  # Install MongoDB
-  sudo curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
-  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
-  sudo apt-get update
-  sudo apt-get install -y mongodb-org
-  sudo apt-mark hold mongodb-org
-
+configure_mongodb() {
+  section "Configuring MongoDB"
+  type_echo "[HACKER] Configuring MongoDB for operation..."
   sudo sed -i '/bindIp/c\  bindIpAll: true' /etc/mongod.conf
-  sudo systemctl daemon-reload
+  log "Bind configuration updated."
+  sudo systemctl daemon-reload >/dev/null 2>&1
   sleep 2
-  sudo systemctl enable mongod.service
+  log "Daemon reloaded."
+  sudo systemctl enable mongod.service >/dev/null 2>&1
   sleep 2
-  sudo systemctl start mongod.service
+  log "MongoDB service enabled."
+  sudo systemctl start mongod.service >/dev/null 2>&1
   sleep 2
+  log "MongoDB service started."
+}
 
-  pretty_box "${BOLD}Phase 2 — Graylog DataNode${RESET}"
-  sudo apt install -y gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless
-  wget https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb
-  sudo dpkg -i graylog-6.3-repository_latest.deb
-  sudo apt-get update
-  sudo apt-get install graylog-datanode
+install_graylog_datanode() {
+  section "Starting Graylog DataNode Installer"
+  type_echo "[HACKER] Installing Graylog DataNode components..."
+  apt_with_animation "Installing additional essentials" gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless
+  wget https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb -O /tmp/graylog-repo.deb >/dev/null 2>&1 &
+  spinner_with_runner $! "Downloading Graylog repository package..."
+  sudo dpkg -i /tmp/graylog-repo.deb >/dev/null 2>&1 || true
+  log "Repository package installed."
+  sudo apt-get update -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Updating package lists..."
+  apt_with_animation "Installing Graylog DataNode" graylog-datanode
+}
 
-  echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.d/99-graylog-datanode.conf
-  sudo sysctl --system
-  sudo sed -i "/password_secret/c\\password_secret = $(openssl rand -hex 32)" /etc/graylog/datanode/datanode.conf
-  sudo sed -i "/mongodb_uri/c\\mongodb_uri = mongodb://127.0.0.1:27017/graylog" /etc/graylog/datanode/datanode.conf
+configure_graylog_datanode() {
+  section "Configuring Graylog DataNode"
+  type_echo "[HACKER] Configuring DataNode settings..."
+  echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.d/99-graylog-datanode.conf >/dev/null
+  log "vm.max_map_count set."
+  sudo sysctl --system >/dev/null 2>&1
+  log "Sysctl configurations loaded."
+  sudo sed -i "/password_secret/c\\password_secret = $(openssl rand -hex 32)" /etc/graylog/datanode/datanode.conf || true
+  log "Password secret generated."
+  sudo sed -i "/mongodb_uri/c\\mongodb_uri = mongodb://127.0.0.1:27017/graylog" /etc/graylog/datanode/datanode.conf || true
+  log "MongoDB URI set."
   echo "opensearch_heap = 4g" >> /etc/graylog/datanode/datanode.conf
-  sudo systemctl daemon-reload
+  log "OpenSearch heap set."
+  sudo systemctl daemon-reload >/dev/null 2>&1
   sleep 2
-  sudo systemctl enable graylog-datanode.service
+  log "Daemon reloaded."
+  sudo systemctl enable graylog-datanode.service >/dev/null 2>&1
   sleep 2
-  sudo systemctl start graylog-datanode
+  log "DataNode service enabled."
+  sudo systemctl start graylog-datanode >/dev/null 2>&1
   sleep 2
+  log "DataNode service started."
+}
 
-  pretty_box "${BOLD}Phase 3 — Graylog Server${RESET}"
-  sudo apt-get install graylog-server
-  sudo sed -i "/password_secret/c$(sed -n '/password_secret/{p;q}' /etc/graylog/datanode/datanode.conf)" /etc/graylog/server/server.conf
+install_graylog_server() {
+  section "Starting Graylog Server Installer"
+  type_echo "[HACKER] Installing Graylog Server..."
+  apt_with_animation "Installing Graylog Server" graylog-server
+  sudo sed -i "/password_secret/c$(sed -n '/password_secret/{p;q}' /etc/graylog/datanode/datanode.conf)" /etc/graylog/server/server.conf || true
+  log "Password secret copied from DataNode."
   sudo sed -i '0,/http_bind_address/{s|.*http_bind_address.*|http_bind_address = 0.0.0.0:9000|}' /etc/graylog/server/server.conf
-  read -sp "Enter Password: " pw && echo && hash=$(echo -n "$pw" | sha256sum | cut -d' ' -f1) && sudo sed -i "/^root_password_sha2 =/c\root_password_sha2 = $hash" /etc/graylog/server/server.conf
+  log "HTTP bind address set."
+  type_echo "[HACKER] Enter Password for root: "
+  read -sp "" pw && echo
+  hash=$(echo -n "$pw" | sha256sum | cut -d' ' -f1)
+  sudo sed -i "/^root_password_sha2 =/c\root_password_sha2 = $hash" /etc/graylog/server/server.conf
+  log "Root password hashed and set."
   sudo sed -i '/^GRAYLOG_SERVER_JAVA_OPTS="-Xms1g/c\GRAYLOG_SERVER_JAVA_OPTS="-Xms2g -Xmx2g -server -XX:+UseG1GC -XX:-OmitStackTraceInFastThrow"' /etc/default/graylog-server
-  sudo systemctl daemon-reload
+  log "Java options updated."
+  sudo systemctl daemon-reload >/dev/null 2>&1
   sleep 2
-  sudo systemctl enable graylog-server.service
+  log "Daemon reloaded."
+  sudo systemctl enable graylog-server.service >/dev/null 2>&1
   sleep 2
-  sudo systemctl start graylog-server.service
+  log "Server service enabled."
+  sudo systemctl start graylog-server.service >/dev/null 2>&1
   sleep 5
+  log "Server service started."
+}
 
-  echo
-  echo -e "${NEON1}${BOLD}► Launching Graylog logs (live preview)${RESET}"
-  sig_line
-  tail -n +1 /var/log/graylog-server/server.log | sed -n '1,120p'
-  sig_line
-  echo -e "${NEON2}${BOLD}Installation complete. ${NEON3}Access Graylog → http://<server-ip>:9000${RESET}\n"
+main() {
+  clear
+  ascii_banner
+  sleep 1
+
+  ensure_prereqs
+  add_mongodb_repo
+  configure_mongodb
+  install_graylog_datanode
+  configure_graylog_datanode
+  install_graylog_server
+
+  section "Tailing Graylog Server Log"
+  type_echo "[HACKER] Displaying recent log entries for verification..."
+  tail /var/log/graylog-server/server.log
+
+  section "Installation Complete"
+  type_echo "[HACKER] Graylog is alive (if services are up)."
+  echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
+  echo -e "${CYAN}Tail logs:${RESET} sudo tail -f /var/log/graylog-server/server.log"
 }
 
 main "$@"
