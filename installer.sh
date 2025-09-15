@@ -23,7 +23,7 @@ cat << "EOF"
         \|__|  \|__|\|__|\|_______|\|_______|            \|__|  \|_______|\|_______|\|__|\|__|       |\_________\\___/ /       |\_________\   \|__|  \|_______|\|__|     \|__|\_________\
                                                                                                      \|_________\|___|/        \|_________|                                  \|_________|
                                                                                                                                                                                                                                                                                                                  
-         MongoDB + Graylog Installer (v0.4)
+         MongoDB + Graylog Installer (v0.5)
 EOF
 }
 
@@ -99,7 +99,7 @@ purge_with_animation() {
 ensure_prereqs() {
   section "Installing Essential Packages"
   type_echo "[HACKER] Ensuring prerequisites are present..."
-  apt_with_animation "Installing gnupg, curl, lsb-release" gnupg curl lsb-release
+  apt_with_animation "Installing gnupg, curl, lsb-release" gnupg curl lsb-release net-tools
 }
 
 add_mongodb_repo() {
@@ -191,7 +191,7 @@ install_graylog_server() {
   sudo systemctl daemon-reload >/dev/null 2>&1
   sleep 2
   log "Daemon reloaded."
-  sudo systemctl enable graylog-server.service >/div/null 2>&1
+  sudo systemctl enable graylog-server.service >/dev/null 2>&1
   sleep 2
   log "Server service enabled."
   sudo systemctl start graylog-server.service >/dev/null 2>&1
@@ -246,7 +246,7 @@ main() {
   ascii_banner
   sleep 1
 
-  if [[ "$1" == "--uninstall" ]]; then
+  if [[ "${1:-}" == "--uninstall" ]]; then
     uninstall_everything
   else
     ensure_prereqs
@@ -264,7 +264,7 @@ main() {
     type_echo "[HACKER] Graylog is alive (if services are up)."
     echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
     echo -e "${CYAN}Tail logs:${RESET} sudo tail -f /var/log/graylog-server/server.log"
+    ifconfig
   fi
 }
-
 main "$@"
