@@ -59,7 +59,7 @@ spinner_with_runner() {
   echo -ne "$msg\n"
 
   while kill -0 $pid 2>/dev/null; do
-    local filled=$(( dustrial % (width+1)))
+    local filled=$((progress % (width+1)))
     local empty=$((width - filled))
     local bar=$(printf "%0.s#" $(seq 1 $filled))
     local space=$(printf "%0.s " $(seq 1 $empty))
@@ -135,7 +135,7 @@ configure_mongodb() {
 install_graylog_datanode() {
   section "Starting Graylog DataNode Installer"
   type_echo "[HACKER] Installing Graylog DataNode components..."
-  apt_with_animation "Installing additional essentials" gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless
+  apt_with_animation "Installing additional essentials" gnupg curl wget apt-transport-https openjdk-17-jre-headless
   wget https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb -O /tmp/graylog-repo.deb >/dev/null 2>&1 &
   spinner_with_runner $! "Downloading Graylog repository package..."
   sudo dpkg -i /tmp/graylog-repo.deb >/dev/null 2>&1 || true
@@ -179,8 +179,8 @@ install_graylog_server() {
   apt_with_animation "Installing Graylog Server" graylog-server
   sudo sed -i "/password_secret/c$(sed -n '/password_secret/{p;q}' /etc/graylog/datanode/datanode.conf)" /etc/graylog/server/server.conf || true
   log "Password secret copied from DataNode."
-  sudo sed -i '0,/http_bind_address/{s|.*http_bind_address.*|http_bind_address = 0.0.0.0:9443|}' /etc/graylog/server/server.conf
-  log "HTTP bind address set."
+  sudo sed -i '0,/http_bind_address/{s|.*http_bind_address.*|http_bind_address = 0.0.0.0:9000|}' /etc/graylog/server/server.conf
+  log "HTTP bind address set to port 9000."
   type_echo "[HACKER] Enter Password for root: "
   read -sp "" pw && echo
   hash=$(echo -n "$pw" | sha256sum | cut -d' ' -f1)
@@ -197,105 +197,6 @@ install_graylog_server() {
   sudo systemctl start graylog-server.service >/dev/null 2>&1
   sleep 5
   log "Server service started."
-}
-
-configure_tls() {
-  section "Configuring TLS/SSL Encryption"
-  type_echo "[HACKER] Setting up TLS/SSL for secure communication..."
-
-  # Create directory for certificates
-  sudo mkdir -p /etc/graylog/certs >/dev/null 2>&1 || {
-    log "Failed to create certificate directory /etc/graylog/certs"
-    exit 1
-  }
-  log "Certificate directory created."
-
-  # Generate self-signed certificate for Graylog and OpenSearch
-  type_echo "[HACKER] Generating self-signed certificate..."
-  sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout /etc/graylog/certs/graylog.key \
-    -out /etc/graylog/certs/graylog.crt \
-    -subj "/C=US/ST=State/L=City/O=Graylog/OU=IT/CN=$(hostname)" >/dev/null 2>&1 || {
-    log "Failed to generate self-signed certificate"
-    exit 1
-  }
-  spinner_with_runner $! "Generating TLS certificate and key..."
-  log "Self-signed certificate generated."
-
-  # Set permissions for certificate files
-  sudo chown graylog:graylog /etc/graylog/certs/graylog.{crt,key} >/dev/null 2>&1 || {
-    log "Failed to set permissions for Graylog certificates"
-    exit 1
-  }
-  sudo chmod 600 /etc/graylog/certs/graylog.{crt,key} >/dev/null 2>&1 || {
-    log "Failed to set permissions for Graylog certificates"
-    exit 1
-  }
-  log "Certificate permissions set."
-
-  # Configure Graylog for HTTPS
-  type_echo "[HACKER] Enabling HTTPS for Graylog web interface..."
-  echo "http_enable_tls = true" | sudo tee -a /etc/graylog/server/server.conf >/dev/null || {
-    log "Failed to configure Graylog HTTPS settings"
-    exit 1
-  }
-  echo "http_tls_cert_file = /etc/graylog/certs/graylog.crt" | sudo tee -a /etc/graylog/server/server.conf >/dev/null || {
-    log "Failed to configure Graylog HTTPS certificate"
-    exit 1
-  }
-  echo "http_tls_key_file = /etc/graylog/certs/graylog.key" | sudo tee -a /etc/graylog/server/server.conf >/dev/null || {
-    log "Failed to configure Graylog HTTPS key"
-    exit 1
-  }
-  log "Graylog configured for HTTPS on port 9443."
-
-  # Configure OpenSearch for TLS
-  type_echo "[HACKER] Configuring TLS for OpenSearch..."
-  sudo mkdir -p /etc/graylog/datanode >/dev/null 2>&1 || {
-    log "Failed to create OpenSearch configuration directory /etc/graylog/datanode"
-    exit 1
-  }
-  sudo cp /etc/graylog/certs/graylog.{crt,key} /etc/graylog/datanode/ >/dev/null 2>&1 || {
-    log "Failed to copy certificates to /etc/graylog/datanode"
-    exit 1
-  }
-  sudo chown opensearch:opensearch /etc/graylog/datanode/graylog.{crt,key} >/dev/null 2>&1 || {
-    log "Failed to set permissions for OpenSearch certificates"
-    exit 1
-  }
-  sudo chmod 600 /etc/graylog/datanode/graylog.{crt,key} >/dev/null 2>&1 || {
-    log "Failed to set permissions for OpenSearch certificates"
-    exit 1
-  }
-  {
-    echo "plugins.security.ssl.http.enabled: true"
-    echo "plugins.security.ssl.http.pemcert_filepath: /etc/graylog/datanode/graylog.crt"
-    echo "plugins.security.ssl.http.pemkey_filepath: /etc/graylog/datanode/graylog.key"
-    echo "plugins.security.ssl.transport.enabled: true"
-    echo "plugins.security.ssl.transport.pemcert_filepath: /etc/graylog/datanode/graylog.crt"
-    echo "plugins.security.ssl.transport.pemkey_filepath: /etc/graylog/datanode/graylog.key"
-  } | sudo tee -a /etc/graylog/datanode/opensearch.yml >/dev/null || {
-    log "Failed to configure OpenSearch TLS settings"
-    exit 1
-  }
-  log "OpenSearch configured for TLS on ports 9200 and 9300."
-
-  # Note about input configuration
-  type_echo "[HACKER] TLS for inputs (Syslog, GELF) must be configured via Graylog web interface..."
-  log "Use /etc/graylog/certs/graylog.crt for Syslog TLS (port 6514) and GELF TLS (port 12201)."
-
-  # Restart services to apply TLS settings
-  sudo systemctl restart graylog-server >/dev/null 2>&1 || {
-    log "Failed to restart Graylog server. Check /var/log/graylog-server/server.log for details."
-    exit 1
-  }
-  spinner_with_runner $! "Restarting Graylog server for TLS..."
-  sudo systemctl restart graylog-datanode >/dev/null 2>&1 || {
-    log "Failed to restart Graylog DataNode. Check /var/log/graylog-datanode/datanode.log for details."
-    exit 1
-  }
-  spinner_with_runner $! "Restarting Graylog DataNode for TLS..."
-  log "Services restarted with TLS enabled."
 }
 
 configure_firewall() {
@@ -374,10 +275,10 @@ configure_firewall() {
   spinner_with_runner $! "Allowing SSH from LAN ($lan_subnet)..."
   log "SSH access allowed from LAN."
 
-  # Allow Graylog web interface and API (port 9443 for HTTPS) from LAN
-  sudo ufw allow from "$lan_subnet" to any port 9443 proto tcp >/dev/null 2>&1 &
-  spinner_with_runner $! "Allowing Graylog HTTPS from LAN ($lan_subnet)..."
-  log "Graylog HTTPS access allowed from LAN."
+  # Allow Graylog web interface and API (port 9000 for HTTP) from LAN
+  sudo ufw allow from "$lan_subnet" to any port 9000 proto tcp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing Graylog HTTP from LAN ($lan_subnet)..."
+  log "Graylog HTTP access allowed from LAN."
 
   # Allow OpenSearch HTTP (port 9200) from LAN
   sudo ufw allow from "$lan_subnet" to any port 9200 proto tcp >/dev/null 2>&1 &
@@ -389,15 +290,15 @@ configure_firewall() {
   spinner_with_runner $! "Allowing OpenSearch node communication from LAN ($lan_subnet)..."
   log "OpenSearch node communication allowed from LAN."
 
-  # Allow Graylog Syslog TLS input (port 6514, TCP) from LAN
-  sudo ufw allow from "$lan_subnet" to any port 6514 proto tcp >/dev/null 2>&1 &
-  spinner_with_runner $! "Allowing Syslog TLS input from LAN ($lan_subnet)..."
-  log "Syslog TLS input access allowed from LAN."
+  # Allow Graylog Syslog input (port 514, UDP) from LAN
+  sudo ufw allow from "$lan_subnet" to any port 514 proto udp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing Syslog input from LAN ($lan_subnet)..."
+  log "Syslog input access allowed from LAN."
 
-  # Allow Graylog GELF TLS input (port 12201, TCP) from LAN
+  # Allow Graylog GELF input (port 12201, TCP) from LAN
   sudo ufw allow from "$lan_subnet" to any port 12201 proto tcp >/dev/null 2>&1 &
-  spinner_with_runner $! "Allowing GELF TLS input from LAN ($lan_subnet)..."
-  log "GELF TLS input access allowed from LAN."
+  spinner_with_runner $! "Allowing GELF input from LAN ($lan_subnet)..."
+  log "GELF input access allowed from LAN."
 
   # Enable UFW
   sudo ufw --force enable >/dev/null 2>&1 &
@@ -439,11 +340,11 @@ uninstall_everything() {
   purge_with_animation "Purging Graylog and MongoDB packages" graylog-server graylog-datanode mongodb-org mongodb-org-*
   log "Packages purged."
 
-  # Remove configuration files, logs, data, and certificates
-  type_echo "[HACKER] Cleaning up configuration files, data, and certificates..."
-  sudo rm -rf /etc/graylog /var/log/graylog-server /var/log/graylog-datanode /var/lib/mongodb /var/log/mongodb /etc/sysctl.d/99-graylog-datanode.conf /tmp/graylog-repo.deb /etc/graylog/certs >/dev/null 2>&1 &
-  spinner_with_runner $! "Removing configuration files, logs, data, and certificates..."
-  log "Configurations, data, and certificates removed."
+  # Remove configuration files, logs, and data
+  type_echo "[HACKER] Cleaning up configuration files and data..."
+  sudo rm -rf /etc/graylog /var/log/graylog-server /var/log/graylog-datanode /var/lib/mongodb /var/log/mongodb /etc/sysctl.d/99-graylog-datanode.conf /tmp/graylog-repo.deb >/dev/null 2>&1 &
+  spinner_with_runner $! "Removing configuration files, logs, and data..."
+  log "Configurations and data removed."
 
   # Remove repositories
   type_echo "[HACKER] Removing MongoDB and Graylog repositories..."
@@ -472,7 +373,6 @@ main() {
     install_graylog_datanode
     configure_graylog_datanode
     install_graylog_server
-    configure_tls
     configure_firewall
 
     section "Tailing Graylog Server Log"
@@ -481,9 +381,9 @@ main() {
 
     section "Installation Complete"
     type_echo "[HACKER] Graylog is alive (if services are up)."
-    echo -e "${CYAN}Web UI:${RESET} https://<server-ip>:9443"
+    echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
     echo -e "${CYAN}Tail logs:${RESET} sudo tail -f /var/log/graylog-server/server.log"
-    echo -e "${CYAN}Note:${RESET} Configure Syslog TLS (port 6514) and GELF TLS (port 12201) inputs in Graylog web UI."
+    echo -e "${CYAN}Note:${RESET} Configure Syslog (port 514, UDP) and GELF (port 12201, TCP) inputs in Graylog web UI."
     ip addr show
   fi
 }
