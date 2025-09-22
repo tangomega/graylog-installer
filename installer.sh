@@ -328,6 +328,9 @@ configure_firewall() {
   lan_subnet="${LAN_SUBNET:-$lan_subnet}"
 
   apt_with_animation "Installing UFW" ufw
+  sudo ufw --force enable >/dev/null 2>/dev/null &
+  spinner_with_runner $! "Enabling firewall..."
+  verify firewall "Status: active" "Firewall enabled."
   sudo ufw default deny incoming >/dev/null 2>/dev/null &
   spinner_with_runner $! "Setting default firewall policy to deny incoming traffic..."
   verify firewall "DENY" "Default firewall policy configured."
@@ -343,15 +346,13 @@ configure_firewall() {
   sudo ufw allow from "$lan_subnet" to any port 9300 proto tcp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Allowing OpenSearch node communication from LAN ($lan_subnet)..."
   verify firewall "9300/tcp.*$lan_subnet" "OpenSearch node communication configured."
-  sudo ufw allow from "$lan_subnet" to any port 1514 proto udp >/dev/null 2>/dev/null &
+  sudo ufw allow from "$lan_subnet" to any port 2514 proto udp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Allowing Syslog input from LAN ($lan_subnet)..."
   verify firewall "1514/udp.*$lan_subnet" "Syslog input access configured."
   sudo ufw allow from "$lan_subnet" to any port 12201 proto tcp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Allowing GELF input from LAN ($lan_subnet)..."
   verify firewall "12201/tcp.*$lan_subnet" "GELF input access configured."
   sudo ufw --force enable >/dev/null 2>/dev/null &
-  spinner_with_runner $! "Enabling firewall..."
-  verify firewall "Status: active" "Firewall enabled."
   sudo ufw status >/dev/null 2>/dev/null &
   spinner_with_runner $! "Verifying firewall configuration..."
   log "Firewall configuration completed."
