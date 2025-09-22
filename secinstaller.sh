@@ -203,8 +203,64 @@ configure_firewall() {
   section "Configuring Firewall"
   type_echo "[HACKER] Securing server with UFW firewall..."
 
-  # Default LAN subnet (can be overridden with environment variable LAN_SUBNET)
-  local lan_subnet="${LAN_SUBNET:-192.168.1.0/24}"
+  # Function to calculate subnet from IP and netmask
+  get_subnet() {
+    local ip=$1
+    local mask=$2
+    IFS='.' read -r i1 i2 i3 i4 <<< "$ip"
+    IFS='.' read -r m1 m2 m3 m4 <<< "$mask"
+    # Calculate network address
+    local n1=$((i1 & m1))
+    local n2=$((i2 & m2))
+    local n3=$((i3 & m3))
+    local n4=$((i4 & m4))
+    # Calculate CIDR prefix from netmask
+    local prefix=0
+    for byte in $m1 $m2 $m3 $m4; do
+      while [ $byte -gt 0 ]; do
+        prefix=$((prefix + (byte & 1)))
+        byte=$((byte >> 1))
+      done
+    done
+    echo "$n1.$n2.$n3.$n4/$prefix"
+  }
+
+  # Detect primary network interface and subnet
+  type_echo "[HACKER] Detecting LAN subnet..."
+  local interface
+  local ip_info
+  local lan_subnet="192.168.1.0/24"  # Default fallback
+
+  # Find the first non-loopback interface with an IP address
+  interface=$(ip link | awk -F: '$0 !~ "lo|docker|br-|^[^0-9]"{print $2; getline}' | head -n 1 | xargs)
+  if [ -n "$interface" ]; then
+    ip_info=$(ip addr show "$interface" | grep -w inet | awk '{print $2}' | head -n 1)
+    if [ -n "$ip_info" ]; then
+      local ip_address=$(echo "$ip_info" | cut -d'/' -f1)
+      local cidr_prefix=$(echo "$ip_info" | cut -d'/' -f2)
+      # Convert CIDR prefix to netmask
+      local netmask
+      case $cidr_prefix in
+        24) netmask="255.255.255.0" ;;
+        16) netmask="255.255.0.0" ;;
+        8) netmask="255.0.0.0" ;;
+        *) netmask=$(ipcalc "$ip_info" | grep Netmask | awk '{print $2}') ;;
+      esac
+      if [ -n "$netmask" ]; then
+        lan_subnet=$(get_subnet "$ip_address" "$netmask")
+        log "Detected LAN subnet: $lan_subnet"
+      else
+        log "Failed to calculate subnet, using default: $lan_subnet"
+      fi
+    else
+      log "No IP address found for interface $interface, using default subnet: $lan_subnet"
+    fi
+  else
+    log "No network interface found, using default subnet: $lan_subnet"
+  fi
+
+  # Allow override with LAN_SUBNET environment variable
+  lan_subnet="${LAN_SUBNET:-$lan_subnet}"
 
   # Install UFW
   apt_with_animation "Installing ufw" ufw
@@ -324,13 +380,12 @@ main() {
     section "Tailing Graylog Server Log"
     type_echo "[HACKER] Displaying recent log entries for verification..."
     tail /var/log/graylog-server/server.log
-    ufw status
 
     section "Installation Complete"
     type_echo "[HACKER] Graylog is alive (if services are up)."
     echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
     echo -e "${CYAN}Tail logs:${RESET} sudo tail -f /var/log/graylog-server/server.log"
-    ifconfig
+    ip addr show
   fi
 }
 main "$@"
