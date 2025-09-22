@@ -333,7 +333,7 @@ configure_firewall() {
   verify firewall "Status: active" "Firewall enabled."
   sudo ufw default deny incoming >/dev/null 2>/dev/null &
   spinner_with_runner $! "Setting default firewall policy to deny incoming traffic..."
-  verify firewall "DENY" "Default firewall policy configured."
+  verify firewall "deny" "Default firewall policy configured."
   sudo ufw allow from "$lan_subnet" to any port 22 proto tcp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Allowing SSH access from LAN ($lan_subnet)..."
   verify firewall "22/tcp.*$lan_subnet" "SSH access configured."
