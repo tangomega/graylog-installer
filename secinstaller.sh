@@ -1,4 +1,3 @@
-```bash
 #!/usr/bin/env bash
 set -euo pipefail
 IFS=$'\n\t'
@@ -86,11 +85,11 @@ spinner_with_runner() {
 # --- APT Install Wrapper ---
 apt_with_animation() {
   local msg=$1; shift
-  sudo apt-get update -y >/dev/null 2>&1 &
+  sudo apt-get update -y >/dev/null 2>/dev/null &
   spinner_with_runner $! "Updating package sources"
   wait $! || true
 
-  sudo apt-get install -y "$@" >/dev/null 2>&1 &
+  sudo apt-get install -y "$@" >/dev/null 2>/dev/null &
   spinner_with_runner $! "$msg"
   wait $! || true
 }
@@ -98,10 +97,10 @@ apt_with_animation() {
 # --- APT Purge Wrapper ---
 purge_with_animation() {
   local msg=$1; shift
-  sudo apt-get purge -y "$@" >/dev/null 2>&1 &
+  sudo apt-get purge -y "$@" >/dev/null 2>/dev/null &
   spinner_with_runner $! "$msg"
   wait $! || true
-  sudo apt-get autoremove -y >/dev/null 2>&1 &
+  sudo apt-get autoremove -y >/dev/null 2>/dev/null &
   spinner_with_runner $! "Removing unused dependencies"
   wait $! || true
 }
@@ -116,11 +115,11 @@ ensure_prereqs() {
 add_mongodb_repo() {
   section "Installing MongoDB"
   type_echo "Configuring MongoDB repository..."
-  curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor >/dev/null 2>&1 &
+  curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor >/dev/null 2>/dev/null &
   spinner_with_runner $! "Adding MongoDB GPG key"
   echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list >/dev/null
   log "MongoDB repository configured."
-  sudo apt-get update -y >/dev/null 2>&1 &
+  sudo apt-get update -y >/dev/null 2>/dev/null &
   spinner_with_runner $! "Updating package lists"
   apt_with_animation "Installing MongoDB" mongodb-org
   sudo apt-mark hold mongodb-org >/dev/null || true
@@ -132,11 +131,11 @@ configure_mongodb() {
   type_echo "Applying MongoDB configurations..."
   sudo sed -i '/bindIp/c\  bindIp: 127.0.0.1' /etc/mongod.conf
   log "MongoDB bound to localhost."
-  sudo systemctl daemon-reload >/dev/null 2>&1 &
+  sudo systemctl daemon-reload >/dev/null 2>/dev/null &
   spinner_with_runner $! "Reloading system daemon"
-  sudo systemctl enable mongod.service >/dev/null 2>&1 &
+  sudo systemctl enable mongod.service >/dev/null 2>/dev/null &
   spinner_with_runner $! "Enabling MongoDB service"
-  sudo systemctl start mongod.service >/dev/null 2>&1 &
+  sudo systemctl start mongod.service >/dev/null 2>/dev/null &
   spinner_with_runner $! "Starting MongoDB service"
   log "MongoDB configuration completed."
 }
@@ -145,11 +144,11 @@ install_graylog_datanode() {
   section "Installing Graylog DataNode"
   type_echo "Installing Graylog DataNode components..."
   apt_with_animation "Installing required dependencies" gnupg curl wget apt-transport-https openjdk-17-jre-headless
-  wget https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb -O /tmp/graylog-repo.deb >/dev/null 2>&1 &
+  wget https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb -O /tmp/graylog-repo.deb >/dev/null 2>/dev/null &
   spinner_with_runner $! "Downloading Graylog repository package"
-  sudo dpkg -i /tmp/graylog-repo.deb >/dev/null 2>&1 || true
+  sudo dpkg -i /tmp/graylog-repo.deb >/dev/null 2>/dev/null || true
   log "Graylog repository configured."
-  sudo apt-get update -y >/dev/null 2>&1 &
+  sudo apt-get update -y >/dev/null 2>/dev/null &
   spinner_with_runner $! "Updating package lists"
   apt_with_animation "Installing Graylog DataNode" graylog-datanode
   log "Graylog DataNode installation completed."
@@ -159,7 +158,7 @@ configure_graylog_datanode() {
   section "Configuring Graylog DataNode"
   type_echo "Applying Graylog DataNode settings..."
   echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.d/99-graylog-datanode.conf >/dev/null
-  sudo sysctl --system >/dev/null 2>&1 &
+  sudo sysctl --system >/dev/null 2>/dev/null &
   spinner_with_runner $! "Configuring system parameters"
   sudo sed -i "/password_secret/c\\password_secret = $(openssl rand -hex 32)" /etc/graylog/datanode/datanode.conf || true
   log "Password secret generated."
@@ -170,11 +169,11 @@ configure_graylog_datanode() {
   half_ram_gb=$(( (half_ram_mb + 512) / 1024 ))
   echo "opensearch_heap = ${half_ram_gb}g" >> /etc/graylog/datanode/datanode.conf
   log "OpenSearch heap set to ${half_ram_gb} GB."
-  sudo systemctl daemon-reload >/dev/null 2>&1 &
+  sudo systemctl daemon-reload >/dev/null 2>/dev/null &
   spinner_with_runner $! "Reloading system daemon"
-  sudo systemctl enable graylog-datanode.service >/dev/null 2>&1 &
+  sudo systemctl enable graylog-datanode.service >/dev/null 2>/dev/null &
   spinner_with_runner $! "Enabling Graylog DataNode service"
-  sudo systemctl start graylog-datanode >/dev/null 2>&1 &
+  sudo systemctl start graylog-datanode >/dev/null 2>/dev/null &
   spinner_with_runner $! "Starting Graylog DataNode service"
   log "Graylog DataNode configuration completed."
 }
@@ -194,11 +193,11 @@ install_graylog_server() {
   log "Administrator password configured."
   sudo sed -i '/^GRAYLOG_SERVER_JAVA_OPTS="-Xms1g/c\GRAYLOG_SERVER_JAVA_OPTS="-Xms2g -Xmx2g -server -XX:+UseG1GC -XX:-OmitStackTraceInFastThrow"' /etc/default/graylog-server
   log "Java runtime options configured."
-  sudo systemctl daemon-reload >/dev/null 2>&1 &
+  sudo systemctl daemon-reload >/dev/null 2>/dev/null &
   spinner_with_runner $! "Reloading system daemon"
-  sudo systemctl enable graylog-server.service >/dev/null 2>&1 &
+  sudo systemctl enable graylog-server.service >/dev/null 2>/dev/null &
   spinner_with_runner $! "Enabling Graylog Server service"
-  sudo systemctl start graylog-server.service >/dev/null 2>&1 &
+  sudo systemctl start graylog-server.service >/dev/null 2>/dev/null &
   spinner_with_runner $! "Starting Graylog Server service"
   log "Graylog Server installation completed."
 }
@@ -260,23 +259,23 @@ configure_firewall() {
   lan_subnet="${LAN_SUBNET:-$lan_subnet}"
 
   apt_with_animation "Installing UFW firewall" ufw
-  sudo ufw default deny incoming >/dev/null 2>&1 &
+  sudo ufw default deny incoming >/dev/null 2>/dev/null &
   spinner_with_runner $! "Setting default firewall policy"
-  sudo ufw allow from "$lan_subnet" to any port 22 proto tcp >/dev/null 2>&1 &
+  sudo ufw allow from "$lan_subnet" to any port 22 proto tcp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Configuring SSH access ($lan_subnet)"
-  sudo ufw allow from "$lan_subnet" to any port 9000 proto tcp >/dev/null 2>&1 &
+  sudo ufw allow from "$lan_subnet" to any port 9000 proto tcp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Configuring Graylog HTTP access ($lan_subnet)"
-  sudo ufw allow from "$lan_subnet" to any port 9200 proto tcp >/dev/null 2>&1 &
+  sudo ufw allow from "$lan_subnet" to any port 9200 proto tcp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Configuring OpenSearch HTTP access ($lan_subnet)"
-  sudo ufw allow from "$lan_subnet" to any port 9300 proto tcp >/dev/null 2>&1 &
+  sudo ufw allow from "$lan_subnet" to any port 9300 proto tcp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Configuring OpenSearch node communication ($lan_subnet)"
-  sudo ufw allow from "$lan_subnet" to any port 514 proto udp >/dev/null 2>&1 &
+  sudo ufw allow from "$lan_subnet" to any port 514 proto udp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Configuring Syslog input ($lan_subnet)"
-  sudo ufw allow from "$lan_subnet" to any port 12201 proto tcp >/dev/null 2>&1 &
+  sudo ufw allow from "$lan_subnet" to any port 12201 proto tcp >/dev/null 2>/dev/null &
   spinner_with_runner $! "Configuring GELF input ($lan_subnet)"
-  sudo ufw --force enable >/dev/null 2>&1 &
+  sudo ufw --force enable >/dev/null 2>/dev/null &
   spinner_with_runner $! "Activating firewall"
-  sudo ufw status >/dev/null 2>&1 &
+  sudo ufw status >/dev/null 2>/dev/null &
   spinner_with_runner $! "Verifying firewall configuration"
   log "Firewall configuration completed."
 }
@@ -288,18 +287,18 @@ uninstall_everything() {
   type_echo "Stopping and disabling services..."
   for service in graylog-server.service graylog-datanode.service mongod.service; do
     if systemctl is-active --quiet $service; then
-      sudo systemctl stop $service >/dev/null 2>&1 &
+      sudo systemctl stop $service >/dev/null 2>/dev/null &
       spinner_with_runner $! "Stopping $service"
     fi
     if systemctl is-enabled --quiet $service; then
-      sudo systemctl disable $service >/dev/null 2>&1 &
+      sudo systemctl disable $service >/dev/null 2>/dev/null &
       spinner_with_runner $! "Disabling $service"
     fi
   done
   log "Services stopped and disabled."
 
   type_echo "Resetting firewall configuration..."
-  sudo ufw --force reset >/dev/null 2>&1 &
+  sudo ufw --force reset >/dev/null 2>/dev/null &
   spinner_with_runner $! "Resetting firewall rules"
   log "Firewall configuration reset."
 
@@ -308,14 +307,14 @@ uninstall_everything() {
   log "Packages removed."
 
   type_echo "Cleaning up configuration and data..."
-  sudo rm -rf /etc/graylog /var/log/graylog-server /var/log/graylog-datanode /var/lib/mongodb /var/log/mongodb /etc/sysctl.d/99-graylog-datanode.conf /tmp/graylog-repo.deb >/dev/null 2>&1 &
+  sudo rm -rf /etc/graylog /var/log/graylog-server /var/log/graylog-datanode /var/lib/mongodb /var/log/mongodb /etc/sysctl.d/99-graylog-datanode.conf /tmp/graylog-repo.deb >/dev/null 2>/dev/null &
   spinner_with_runner $! "Removing configuration and data"
   log "Configuration and data removed."
 
   type_echo "Removing repositories..."
-  sudo rm -f /etc/apt/sources.list.d/mongodb-org-8.0.list /etc/apt/sources.list.d/graylog.list /usr/share/keyrings/mongodb-server-8.0.gpg >/dev/null 2>&1 &
+  sudo rm -f /etc/apt/sources.list.d/mongodb-org-8.0.list /etc/apt/sources.list.d/graylog.list /usr/share/keyrings/mongodb-server-8.0.gpg >/dev/null 2>/dev/null &
   spinner_with_runner $! "Removing repository configurations"
-  sudo apt-get update -y >/dev/null 2>&1 &
+  sudo apt-get update -y >/dev/null 2>/dev/null &
   spinner_with_runner $! "Updating package lists"
   log "Repositories removed."
 
@@ -356,4 +355,3 @@ main() {
   fi
 }
 main "$@"
-```
