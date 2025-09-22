@@ -291,7 +291,7 @@ configure_firewall() {
   log "OpenSearch node communication configured."
 
   # Allow Graylog Syslog input (port 514, UDP) from LAN
-  sudo ufw allow from "$lan_subnet" to any port 514 proto udp >/dev/null 2>&1 &
+  sudo ufw allow from "$lan_subnet" to any port 2514 proto udp >/dev/null 2>&1 &
   spinner_with_runner $! "Allowing Syslog input from LAN ($lan_subnet)..."
   log "Syslog input access configured."
 
