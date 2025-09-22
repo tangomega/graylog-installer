@@ -57,7 +57,7 @@ spinner_with_runner() {
   local pid=$1
   local msg=$2
   local delay=0.1
-  local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏" "🏃")
+  local frames="⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ 🏃"
   local width=30
   local progress=0
   local total_steps=100
@@ -68,9 +68,11 @@ spinner_with_runner() {
     local percent=$((progress * 100 / total_steps))
     local filled=$((progress * width / total_steps))
     local empty=$((width - filled))
-    local bar=$(printf "%0.s " $(seq 1 $filled))
+    local bar=$(printf "%0.s█" $(seq 1 $filled))
     local space=$(printf "%0.s " $(seq 1 $empty))
-    local frame=${frames[$((progress % ${#frames[@]}))]}
+    local frame_count=$(echo "$frames" | wc -w)
+    local frame_index=$((progress % frame_count + 1))
+    local frame=$(echo "$frames" | awk "{print \$${frame_index}}")
 
     printf "\r${BLUE}[%s%s] %3d%% %s %s${RESET}" "$bar" "$space" "$percent" "$frame" "$msg"
     sleep $delay
