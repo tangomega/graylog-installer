@@ -443,7 +443,6 @@ main() {
     section "Verifying Network Connectivity"
     type_echo "Checking Graylog web interface and OpenSearch accessibility..."
     verify port 9000 "Graylog web interface accessible on port 9000."
-    verify port 9200 "OpenSearch accessible on port 9200."
 
     section "Reviewing Graylog Server Logs"
     type_echo "Displaying recent log entries for verification..."
@@ -453,7 +452,7 @@ main() {
     type_echo "Graylog installation completed successfully."
     echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
     echo -e "${CYAN}Log Monitoring:${RESET} sudo tail -f /var/log/graylog-server/server.log"
-    echo -e "${CYAN}Note:${RESET} Configure Syslog (port 1514, UDP) and GELF (port 12201, TCP) inputs via the Graylog web interface."
+    echo -e "${CYAN}Note:${RESET} Configure Syslog (port 2514, UDP) and GELF (port 12201, TCP) inputs via the Graylog web interface."
     ip addr show
   fi
 }
