@@ -96,7 +96,7 @@ verify() {
       fi
       ;;
     firewall)
-      if sudo ufw status | grep -q "$target"; then
+      if sudo ufw status verbose | grep -q "$target"; then
         log "$msg"
       else
         error "Failed to verify firewall rule: $target not found in UFW status."
