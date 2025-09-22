@@ -68,7 +68,7 @@ spinner_with_runner() {
     local percent=$((progress * 100 / total_steps))
     local filled=$((progress * width / total_steps))
     local empty=$((width - filled))
-    local bar=$(printf "%0.s█" $(seq 1 $filled))
+    local bar=$(printf "%0.s " $(seq 1 $filled))
     local space=$(printf "%0.s " $(seq 1 $empty))
     local frame=${frames[$((progress % ${#frames[@]}))]}
 
