@@ -33,9 +33,11 @@ EOF
 type_echo() {
   local text="$1"
   local delay="${2:-0.02}"
-  for ((i=0; i<${#text}; i++)); do
+  local i=0
+  while [ $i -lt ${#text} ]; do
     printf "%s" "${text:$i:1}"
     sleep "$delay"
+    i=$((i + 1))
   done
   printf "\n"
 }
