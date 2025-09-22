@@ -1,187 +1,336 @@
 #!/usr/bin/env bash
-# Hardened Graylog + MongoDB installer with verification checks
-# Implements Graylog security best practices:
-#  - Restrict service bindings to localhost
-#  - Enforce MongoDB authentication
-#  - Generate secure secrets
-#  - Optionally configure TLS reverse proxy with Nginx
-#  - Configure strict firewall
-#  - Verify each step
-#
-# Usage:
-#   sudo ./installer.sh            # install & harden
-#   sudo ./installer.sh --uninstall # remove everything
-
 set -euo pipefail
 IFS=$'\n\t'
 
-# ---- Configurable defaults ----
-GRAYLOG_HTTP_PORT=9000
-GRAYLOG_BIND_ADDR="127.0.0.1"
-MONGODB_BIND_ADDR="127.0.0.1"
-WIREGUARD_PORT=51820
-SYSLOG_TCP_PORT=514
-SYSLOG_UDP_PORT=514
+# Colors & Effects
+GREEN="\033[0;32m"
+CYAN="\033[0;36m"
+MAGENTA="\033[0;35m"
+RESET="\033[0m"
+BOLD="\033[1m"
 
-# ---- Logging helpers ----
-info() { printf "\e[1;36m[INFO]\e[0m %s\n" "$*"; }
-ok()   { printf "\e[1;32m[ OK ]\e[0m %s\n" "$*"; }
-warn() { printf "\e[1;33m[WARN]\e[0m %s\n" "$*"; }
-err()  { printf "\e[1;31m[ERR ]\e[0m %s\n" "$*" >&2; }
+DEBIAN_FRONTEND=noninteractive
+export DEBIAN_FRONTEND
 
-# ---- Basic checks ----
-require_root() {
-  if [ "$EUID" -ne 0 ]; then
-    err "This script must be run as root. Use sudo."
-    exit 1
-  fi
-}
-confirm_prompt() { read -r -p "$1 [y/N]: " ans; [[ "$ans" =~ ^([yY][eE][sS]|[yY])$ ]]; }
-check_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-# ---- Verification helpers ----
-verify_service_active() {
-  systemctl is-active --quiet "$1" && ok "Service $1 active" || { err "Service $1 not active"; return 1; }
-}
-verify_port_listening() {
-  ss -ltn | awk '{print $4}' | grep -q ":$1\$" && ok "Port $1 listening" || warn "Port $1 not listening"
-}
-verify_file_perms() {
-  [ -f "$1" ] || { warn "$1 missing"; return 1; }
-  local u g m; u=$(stat -c %U "$1"); g=$(stat -c %G "$1"); m=$(stat -c %a "$1")
-  [ "$u" = "$2" ] && [ "$g" = "$3" ] && [ "$m" = "$4" ] && ok "$1 perms OK" || warn "$1 perms wrong"
-}
-
-# ---- Preflight ----
-preflight_checks() {
-  require_root
-  info "Checking dependencies..."
-  for cmd in curl wget apt-get systemctl ss openssl jq ufw; do check_cmd "$cmd" || apt-get install -y "$cmd"; done
-  info "Checking disk space..."
-  [ "$(df --output=avail /var | tail -1)" -lt $((5*1024*1024)) ] && warn "Less than 5GB free in /var"
-}
-
-# ---- Install prereqs ----
-install_prereqs() {
-  apt-get update -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y gnupg curl lsb-release apt-transport-https ca-certificates jq openjdk-17-jre-headless ufw
-}
-
-# ---- MongoDB ----
-add_mongodb_repo() {
-  curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor >/usr/share/keyrings/mongodb-server-8.0.gpg
-  echo "deb [signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu $(lsb_release -cs)/mongodb-org/8.0 multiverse" > /etc/apt/sources.list.d/mongodb-org-8.0.list
-  apt-get update -y
-}
-install_mongodb() {
-  DEBIAN_FRONTEND=noninteractive apt-get install -y mongodb-org
-  systemctl enable --now mongod
-  verify_service_active mongod
-}
-configure_mongodb_secure() {
-  sed -i "s/^ *bindIp.*/  bindIp: ${MONGODB_BIND_ADDR}/" /etc/mongod.conf || true
-  grep -q "^security:" /etc/mongod.conf || echo -e "\nsecurity:\n  authorization: enabled" >> /etc/mongod.conf
-  systemctl restart mongod
-  verify_service_active mongod
-  read -rp "MongoDB admin user [graylog]: " mongo_user; mongo_user=${mongo_user:-graylog}
-  read -rsp "MongoDB admin password: " mongo_pass; echo
-  mongo admin --eval "db.createUser({user:'$mongo_user',pwd:'$mongo_pass',roles:[{role:'userAdminAnyDatabase',db:'admin'},{role:'readWriteAnyDatabase',db:'admin'}]})" || true
-  mkdir -p /etc/graylog/credentials
-  echo "$mongo_user" > /etc/graylog/credentials/mongo_user
-  echo "$mongo_pass" > /etc/graylog/credentials/mongo_pass
-  chmod 600 /etc/graylog/credentials/*
-}
-
-# ---- Graylog ----
-add_graylog_repo_and_install() {
-  wget -q -O /tmp/graylog-repo.deb https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb
-  dpkg -i /tmp/graylog-repo.deb || true
-  apt-get update -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y graylog-datanode graylog-server
-}
-configure_graylog_secure() {
-  password_secret_file="/etc/graylog/password_secret"
-  [ -f "$password_secret_file" ] || openssl rand -hex 64 > "$password_secret_file"
-  chmod 400 "$password_secret_file"
-  password_secret=$(cat "$password_secret_file")
-  sed -i "s|^password_secret.*|password_secret = ${password_secret}|" /etc/graylog/server/server.conf || echo "password_secret = ${password_secret}" >> /etc/graylog/server/server.conf
-  mongo_user=$(cat /etc/graylog/credentials/mongo_user)
-  mongo_pass=$(cat /etc/graylog/credentials/mongo_pass)
-  mongodb_uri="mongodb://${mongo_user}:${mongo_pass}@127.0.0.1:27017/graylog?authSource=admin"
-  grep -q "^mongodb_uri" /etc/graylog/server/server.conf && sed -i "s|^mongodb_uri.*|mongodb_uri = ${mongodb_uri}|" /etc/graylog/server/server.conf || echo "mongodb_uri = ${mongodb_uri}" >> /etc/graylog/server/server.conf
-  sed -i "s|^http_bind_address.*|http_bind_address = ${GRAYLOG_BIND_ADDR}:${GRAYLOG_HTTP_PORT}|" /etc/graylog/server/server.conf || echo "http_bind_address = ${GRAYLOG_BIND_ADDR}:${GRAYLOG_HTTP_PORT}" >> /etc/graylog/server/server.conf
-}
-
-# ---- Optional TLS ----
-configure_nginx_tls() {
-  confirm_prompt "Configure Nginx TLS reverse proxy?" || return 0
-  apt-get install -y nginx
-  read -rp "FQDN for TLS cert: " server_name
-  read -rp "Path to cert [/etc/ssl/certs/graylog.crt]: " tls_cert; tls_cert=${tls_cert:-/etc/ssl/certs/graylog.crt}
-  read -rp "Path to key [/etc/ssl/private/graylog.key]: " tls_key; tls_key=${tls_key:-/etc/ssl/private/graylog.key}
-  cat > /etc/nginx/sites-available/graylog <<EOF
-server {
-    listen 443 ssl;
-    server_name ${server_name};
-    ssl_certificate ${tls_cert};
-    ssl_certificate_key ${tls_key};
-    location / {
-        proxy_pass http://${GRAYLOG_BIND_ADDR}:${GRAYLOG_HTTP_PORT};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Graylog-Server-URL https://${server_name};
-    }
-}
-server { listen 80; server_name ${server_name}; return 301 https://\$host\$request_uri; }
+ascii_banner() {
+cat << "EOF"
+ _________  ________  ___  ___  _______           _________  _______   ________  ___  ___          ________       ___    ___ ________  _________  _______   _____ ______   ________      
+|\___   ___\\   __  \|\  \|\  \|\  ___ \         |\___   ___\\  ___ \ |\   ____\|\  \|\  \        |\   ____\     |\  \  /  /|\   ____\|\___   ___\\  ___ \ |\   _ \  _   \|\   ____\     
+\|___ \  \_\ \  \|\  \ \  \\\  \ \   __/|        \|___ \  \_\ \   __/|\ \  \___|\ \  \\\  \       \ \  \___|_    \ \  \/  / | \  \___|\|___ \  \_\ \   __/|\ \  \\\__\ \  \ \  \___|_    
+     \ \  \ \ \   _  _\ \  \\\  \ \  \_|/__           \ \  \ \ \  \_|/_\ \  \    \ \   __  \       \ \_____  \    \ \    / / \ \_____  \   \ \  \ \ \  \_|/_\ \  \\|__| \  \ \_____  \   
+      \ \  \ \ \  \\  \\ \  \\\  \ \  \_|\ \           \ \  \ \ \  \_|\ \ \  \____\ \  \ \  \       \|____|\  \    \/  /  /   \|____|\  \   \ \  \ \ \  \_|\ \ \  \    \ \  \|____|\  \  
+       \ \__\ \ \__\\ _\\ \_______\ \_______\           \ \__\ \ \_______\ \_______\ \__\ \__\        ____\_\  \ __/  / /       ____\_\  \   \ \__\ \ \_______\ \__\    \ \__\____\_\  \ 
+        \|__|  \|__|\|__|\|_______|\|_______|            \|__|  \|_______|\|_______|\|__|\|__|       |\_________\\___/ /       |\_________\   \|__|  \|_______|\|__|     \|__|\_________\
+                                                                                                     \|_________\|___|/        \|_________|                                  \|_________|
+                                                                                                                                                                                                                                                                                                                 
+         MongoDB + Graylog Installer (v0.5)
 EOF
-  ln -sf /etc/nginx/sites-available/graylog /etc/nginx/sites-enabled/
-  nginx -t && systemctl restart nginx
-  verify_service_active nginx
 }
 
-# ---- Firewall ----
-configure_firewall() {
-  ufw --force reset
-  ufw default deny incoming
-  ufw default allow outgoing
-  ufw allow 22/tcp comment 'SSH'
-  ufw allow "${SYSLOG_TCP_PORT}"/tcp comment 'Syslog TCP'
-  ufw allow "${SYSLOG_UDP_PORT}"/udp comment 'Syslog UDP'
-  systemctl is-active --quiet nginx && ufw allow 443/tcp comment 'HTTPS' && ufw allow 80/tcp comment 'HTTP'
-  ufw --force enable
-  ufw status verbose
+type_echo() {
+  local text="$1"
+  local delay="${2:-0.01}"
+  for ((i=0; i<${#text}; i++)); do
+    printf "%s" "${text:$i:1}"
+    sleep "$delay"
+  done
+  printf "\n"
 }
 
-# ---- Services ----
-start_and_verify_services() {
-  systemctl enable --now graylog-datanode graylog-server
+section() {
+  echo -e "\n${CYAN}============================================================${RESET}"
+  echo -e "${MAGENTA}${BOLD}>> $1${RESET}"
+  echo -e "${CYAN}============================================================${RESET}\n"
+}
+
+log() {
+  echo -e "${GREEN}[+]${RESET} $1"
+}
+
+# --- Stick Figure Progress Bar ---
+spinner_with_runner() {
+  local pid=$1
+  local msg=$2
+  local delay=0.1
+  local frames=("🏃" "🏃‍♂️" "🏃‍♀️")
+  local width=30
+  local progress=0
+
+  echo -ne "$msg\n"
+
+  while kill -0 $pid 2>/dev/null; do
+    local filled=$((progress % (width+1)))
+    local empty=$((width - filled))
+    local bar=$(printf "%0.s#" $(seq 1 $filled))
+    local space=$(printf "%0.s " $(seq 1 $empty))
+    local frame=${frames[$((progress % ${#frames[@]}))]}
+
+    printf "\r[%s%s] %s %s" "$bar" "$space" "$frame" "$msg"
+    sleep $delay
+    progress=$((progress+1))
+  done
+
+  printf "\r[%s] ✅ %s\n" "$(printf "%0.s#" $(seq 1 $width))" "$msg"
+}
+
+# --- APT Install Wrapper ---
+apt_with_animation() {
+  local msg=$1; shift
+  sudo apt-get update -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Updating apt sources..."
+  wait $! || true
+
+  sudo apt-get install -y "$@" >/dev/null 2>&1 &
+  spinner_with_runner $! "$msg"
+  wait $! || true
+}
+
+# --- APT Purge Wrapper ---
+purge_with_animation() {
+  local msg=$1; shift
+  sudo apt-get purge -y "$@" >/dev/null 2>&1 &
+  spinner_with_runner $! "$msg"
+  wait $! || true
+  sudo apt-get autoremove -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Cleaning up unused dependencies..."
+  wait $! || true
+}
+
+ensure_prereqs() {
+  section "Installing Essential Packages"
+  type_echo "[HACKER] Ensuring prerequisites are present..."
+  apt_with_animation "Installing gnupg, curl, lsb-release" gnupg curl lsb-release net-tools
+}
+
+add_mongodb_repo() {
+  section "Installing MongoDB"
+  type_echo "[HACKER] Adding official MongoDB APT repo..."
+  curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor >/dev/null 2>&1 &
+  spinner_with_runner $! "Adding MongoDB GPG key..."
+  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list >/dev/null
+  log "Repository configured."
+  sudo apt-get update -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Updating package lists..."
+  apt_with_animation "Installing MongoDB" mongodb-org
+  sudo apt-mark hold mongodb-org >/dev/null || true
+  log "MongoDB version held."
+}
+
+configure_mongodb() {
+  section "Configuring MongoDB"
+  type_echo "[HACKER] Configuring MongoDB for operation..."
+  sudo sed -i '/bindIp/c\  bindIp: 127.0.0.1' /etc/mongod.conf
+  log "MongoDB bound to localhost."
+  sudo systemctl daemon-reload >/dev/null 2>&1
+  sleep 2
+  log "Daemon reloaded."
+  sudo systemctl enable mongod.service >/dev/null 2>&1
+  sleep 2
+  log "MongoDB service enabled."
+  sudo systemctl start mongod.service >/dev/null 2>&1
+  sleep 2
+  log "MongoDB service started."
+}
+
+install_graylog_datanode() {
+  section "Starting Graylog DataNode Installer"
+  type_echo "[HACKER] Installing Graylog DataNode components..."
+  apt_with_animation "Installing additional essentials" gnupg curl wget apt-transport-https openssl ca-certificates jq openjdk-17-jre-headless
+  wget https://packages.graylog2.org/repo/packages/graylog-6.3-repository_latest.deb -O /tmp/graylog-repo.deb >/dev/null 2>&1 &
+  spinner_with_runner $! "Downloading Graylog repository package..."
+  sudo dpkg -i /tmp/graylog-repo.deb >/dev/null 2>&1 || true
+  log "Repository package installed."
+  sudo apt-get update -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Updating package lists..."
+  apt_with_animation "Installing Graylog DataNode" graylog-datanode
+}
+
+configure_graylog_datanode() {
+  section "Configuring Graylog DataNode"
+  type_echo "[HACKER] Configuring DataNode settings..."
+  echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.d/99-graylog-datanode.conf >/dev/null
+  log "vm.max_map_count set."
+  sudo sysctl --system >/dev/null 2>&1
+  log "Sysctl configurations loaded."
+  sudo sed -i "/password_secret/c\\password_secret = $(openssl rand -hex 32)" /etc/graylog/datanode/datanode.conf || true
+  log "Password secret generated."
+  sudo sed -i "/mongodb_uri/c\\mongodb_uri = mongodb://127.0.0.1:27017/graylog" /etc/graylog/datanode/datanode.conf || true
+  log "MongoDB URI set."
+  # Calculate half of system RAM for opensearch_heap
+  total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+  half_ram_mb=$((total_ram_kb / 1024 / 2))
+  half_ram_gb=$(( (half_ram_mb + 512) / 1024 ))  # Round to nearest GB
+  echo "opensearch_heap = ${half_ram_gb}g" >> /etc/graylog/datanode/datanode.conf
+  log "OpenSearch heap set to ${half_ram_gb} GB (half of system RAM)."
+  sudo systemctl daemon-reload >/dev/null 2>&1
+  sleep 2
+  log "Daemon reloaded."
+  sudo systemctl enable graylog-datanode.service >/dev/null 2>&1
+  sleep 2
+  log "DataNode service enabled."
+  sudo systemctl start graylog-datanode >/dev/null 2>&1
+  sleep 2
+  log "DataNode service started."
+}
+
+install_graylog_server() {
+  section "Starting Graylog Server Installer"
+  type_echo "[HACKER] Installing Graylog Server..."
+  apt_with_animation "Installing Graylog Server" graylog-server
+  sudo sed -i "/password_secret/c$(sed -n '/password_secret/{p;q}' /etc/graylog/datanode/datanode.conf)" /etc/graylog/server/server.conf || true
+  log "Password secret copied from DataNode."
+  sudo sed -i '0,/http_bind_address/{s|.*http_bind_address.*|http_bind_address = 0.0.0.0:9000|}' /etc/graylog/server/server.conf
+  log "HTTP bind address set."
+  type_echo "[HACKER] Enter Password for root: "
+  read -sp "" pw && echo
+  hash=$(echo -n "$pw" | sha256sum | cut -d' ' -f1)
+  sudo sed -i "/^root_password_sha2 =/c\root_password_sha2 = $hash" /etc/graylog/server/server.conf
+  log "Root password hashed and set."
+  sudo sed -i '/^GRAYLOG_SERVER_JAVA_OPTS="-Xms1g/c\GRAYLOG_SERVER_JAVA_OPTS="-Xms2g -Xmx2g -server -XX:+UseG1GC -XX:-OmitStackTraceInFastThrow"' /etc/default/graylog-server
+  log "Java options updated."
+  sudo systemctl daemon-reload >/dev/null 2>&1
+  sleep 2
+  log "Daemon reloaded."
+  sudo systemctl enable graylog-server.service >/dev/null 2>&1
+  sleep 2
+  log "Server service enabled."
+  sudo systemctl start graylog-server.service >/dev/null 2>&1
   sleep 5
-  verify_service_active graylog-server
-  curl -sI http://${GRAYLOG_BIND_ADDR}:${GRAYLOG_HTTP_PORT} | head -n1
+  log "Server service started."
 }
 
-# ---- Uninstall ----
+configure_firewall() {
+  section "Configuring Firewall"
+  type_echo "[HACKER] Securing server with UFW firewall..."
+
+  # Default LAN subnet (can be overridden with environment variable LAN_SUBNET)
+  local lan_subnet="${LAN_SUBNET:-192.168.1.0/24}"
+
+  # Install UFW
+  apt_with_animation "Installing ufw" ufw
+
+  # Set default policy to deny all incoming traffic
+  sudo ufw default deny incoming >/dev/null 2>&1 &
+  spinner_with_runner $! "Setting default firewall policy to deny incoming..."
+  log "Default policy set to deny incoming."
+
+  # Allow SSH (port 22) from LAN
+  sudo ufw allow from "$lan_subnet" to any port 22 proto tcp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing SSH from LAN ($lan_subnet)..."
+  log "SSH access allowed from LAN."
+
+  # Allow Graylog web interface and API (port 9000) from LAN
+  sudo ufw allow from "$lan_subnet" to any port 9000 proto tcp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing Graylog web interface from LAN ($lan_subnet)..."
+  log "Graylog web interface access allowed from LAN."
+
+  # Allow OpenSearch HTTP (port 9200) from LAN
+  sudo ufw allow from "$lan_subnet" to any port 9200 proto tcp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing OpenSearch HTTP from LAN ($lan_subnet)..."
+  log "OpenSearch HTTP access allowed from LAN."
+
+  # Allow OpenSearch node communication (port 9300) from LAN
+  sudo ufw allow from "$lan_subnet" to any port 9300 proto tcp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing OpenSearch node communication from LAN ($lan_subnet)..."
+  log "OpenSearch node communication allowed from LAN."
+
+  # Allow Graylog Syslog input (port 514, TCP and UDP) from LAN (optional)
+  sudo ufw allow from "$lan_subnet" to any port 514 proto tcp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing Syslog TCP input from LAN ($lan_subnet)..."
+  sudo ufw allow from "$lan_subnet" to any port 514 proto udp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing Syslog UDP input from LAN ($lan_subnet)..."
+  log "Syslog input access allowed from LAN."
+
+  # Allow Graylog GELF input (port 12201, TCP) from LAN (optional)
+  sudo ufw allow from "$lan_subnet" to any port 12201 proto tcp >/dev/null 2>&1 &
+  spinner_with_runner $! "Allowing GELF input from LAN ($lan_subnet)..."
+  log "GELF input access allowed from LAN."
+
+  # Enable UFW
+  sudo ufw --force enable >/dev/null 2>&1 &
+  spinner_with_runner $! "Enabling firewall..."
+  log "Firewall enabled."
+
+  # Display firewall status
+  sudo ufw status >/dev/null 2>&1 &
+  spinner_with_runner $! "Verifying firewall configuration..."
+  log "Firewall configuration completed."
+}
+
 uninstall_everything() {
-  systemctl stop graylog-server graylog-datanode mongod nginx || true
-  apt-get purge -y graylog-server graylog-datanode mongodb-org nginx || true
-  apt-get autoremove -y || true
-  rm -rf /etc/graylog /var/lib/mongodb /var/log/graylog* /var/log/mongodb
+  section "Uninstalling MongoDB and Graylog"
+  type_echo "[HACKER] Initiating complete removal of MongoDB and Graylog components..."
+
+  # Stop and disable services
+  type_echo "[HACKER] Stopping and disabling services..."
+  for service in graylog-server.service graylog-datanode.service mongod.service; do
+    if systemctl is-active --quiet $service; then
+      sudo systemctl stop $service >/dev/null 2>&1 &
+      spinner_with_runner $! "Stopping $service..."
+    fi
+    if systemctl is-enabled --quiet $service; then
+      sudo systemctl disable $service >/dev/null 2>&1 &
+      spinner_with_runner $! "Disabling $service..."
+    fi
+  done
+  log "All services stopped and disabled."
+
+  # Reset firewall rules
+  type_echo "[HACKER] Resetting firewall configuration..."
+  sudo ufw --force reset >/dev/null 2>&1 &
+  spinner_with_runner $! "Resetting UFW rules..."
+  log "Firewall rules reset."
+
+  # Purge packages
+  type_echo "[HACKER] Removing installed packages..."
+  purge_with_animation "Purging Graylog and MongoDB packages" graylog-server graylog-datanode mongodb-org mongodb-org-*
+  log "Packages purged."
+
+  # Remove configuration files, logs, and data
+  type_echo "[HACKER] Cleaning up configuration files and data..."
+  sudo rm -rf /etc/graylog /var/log/graylog-server /var/log/graylog-datanode /var/lib/mongodb /var/log/mongodb /etc/sysctl.d/99-graylog-datanode.conf /tmp/graylog-repo.deb >/dev/null 2>&1 &
+  spinner_with_runner $! "Removing configuration files, logs, and data..."
+  log "Configurations and data removed."
+
+  # Remove repositories
+  type_echo "[HACKER] Removing MongoDB and Graylog repositories..."
+  sudo rm -f /etc/apt/sources.list.d/mongodb-org-8.0.list /etc/apt/sources.list.d/graylog.list /usr/share/keyrings/mongodb-server-8.0.gpg >/dev/null 2>&1 &
+  spinner_with_runner $! "Removing repository configurations..."
+  sudo apt-get update -y >/dev/null 2>&1 &
+  spinner_with_runner $! "Updating package lists..."
+  log "Repositories removed."
+
+  section "Uninstallation Complete"
+  type_echo "[HACKER] MongoDB and Graylog have been completely removed."
+  echo -e "${CYAN}System Status:${RESET} Clean"
 }
 
-# ---- Main ----
 main() {
-  case "${1:-}" in
-    --uninstall) uninstall_everything; exit 0;;
-  esac
-  preflight_checks
-  install_prereqs
-  add_mongodb_repo
-  install_mongodb
-  configure_mongodb_secure
-  add_graylog_repo_and_install
-  configure_graylog_secure
-  configure_nginx_tls
-  configure_firewall
-  start_and_verify_services
+  clear
+  ascii_banner
+  sleep 1
+
+  if [[ "${1:-}" == "--uninstall" ]]; then
+    uninstall_everything
+  else
+    ensure_prereqs
+    add_mongodb_repo
+    configure_mongodb
+    install_graylog_datanode
+    configure_graylog_datanode
+    install_graylog_server
+    configure_firewall
+
+    section "Tailing Graylog Server Log"
+    type_echo "[HACKER] Displaying recent log entries for verification..."
+    tail /var/log/graylog-server/server.log
+    ufw status
+
+    section "Installation Complete"
+    type_echo "[HACKER] Graylog is alive (if services are up)."
+    echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
+    echo -e "${CYAN}Tail logs:${RESET} sudo tail -f /var/log/graylog-server/server.log"
+    ifconfig
+  fi
 }
 main "$@"
