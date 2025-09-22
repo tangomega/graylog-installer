@@ -452,7 +452,7 @@ main() {
     type_echo "Graylog installation completed successfully."
     echo -e "${CYAN}Web UI:${RESET} http://<server-ip>:9000"
     echo -e "${CYAN}Log Monitoring:${RESET} sudo tail -f /var/log/graylog-server/server.log"
-    echo -e "${CYAN}Note:${RESET} Configure Syslog (port 2514, UDP) and GELF (port 12201, TCP) inputs via the Graylog web interface."
+    echo -e "${CYAN}Note:${RESET} Configure Syslog (port 6514, UDP) and GELF (port 12201, TCP) inputs via the Graylog web interface."
     ip addr show
   fi
 }
