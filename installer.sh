@@ -119,7 +119,7 @@ add_mongodb_repo() {
 configure_mongodb() {
   section "Configuring MongoDB"
   type_echo "[HACKER] Configuring MongoDB for operation..."
-  sudo sed -i '/bindIp/c\  bindIpAll: true' /etc/mongod.conf
+  sudo sed -i '/bindIp/c\  bindIp: 127.0.0.1' /etc/mongod.conf
   log "Bind configuration updated."
   sudo systemctl daemon-reload >/dev/null 2>&1
   sleep 2
